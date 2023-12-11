@@ -6,7 +6,7 @@
 1. Clone this repository and navigate to BEV LLaVA folder
 
 ```
-git clone https://github.com/haotian-liu/LLaVA.git
+git clone https://github.com/gray311/BEV-LLaVA.git
 cd BEV-LLaVA
 ```
 
