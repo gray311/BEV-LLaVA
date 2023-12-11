@@ -24,6 +24,7 @@ pip install -U openmim
 mim install mmengine
 mim install "mmcv>=2.0.0"
 mim install mmdet
+mim install "mmdet3d>=1.1.0rc0"
 ```
 
 4. Install additional packages for training cases
