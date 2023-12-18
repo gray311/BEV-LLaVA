@@ -59,6 +59,7 @@ class BEVFormer(nn.Module):
         if img_backbone:
             self.img_backbone = builder.build_vision_encoder(img_backbone)
         if img_neck is not None:
+            self.with_img_neck = True
             self.img_neck = builder.build_neck(img_neck)
 
     def extract_img_feat(self, img, img_metas, len_queue=None):
@@ -129,7 +130,6 @@ class BEVFormer(nn.Module):
         """Obtain history BEV features iteratively. To save GPU memory, gradients are not calculated.
         """
         self.eval()
-
         with torch.no_grad():
             prev_bev = None
             bs, len_queue, num_cams, C, H, W = imgs_queue.shape
@@ -186,7 +186,6 @@ class BEVFormer(nn.Module):
         Returns:
             dict: Losses of different branches.
         """
-
         len_queue = img.size(1)
         prev_img = img[:, :-1, ...]
         img = img[:, -1, ...]
@@ -198,7 +197,7 @@ class BEVFormer(nn.Module):
         if not img_metas[0]["prev_bev_exists"]:
             prev_bev = None
         img_feats = self.extract_feat(img=img, img_metas=img_metas)
-        outputs = self.pts_bbox_head(pts_feats, img_metas, prev_bev)
+        outputs = self.pts_bbox_head(img_feats, img_metas, prev_bev, only_bev=True)
 
         return outputs
 

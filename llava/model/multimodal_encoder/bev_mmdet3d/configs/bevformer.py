@@ -1,8 +1,8 @@
-from bev_mmdet3d.models.detectors import BEVFormer
-from bev_mmdet3d.models.backbone import ResNet
-from bev_mmdet3d.models.necks import FPN
-from bev_mmdet3d.models.dense_heads import BEVFormerHead
-from bev_mmdet3d.models.modules import (
+from llava.model.multimodal_encoder.bev_mmdet3d.models.detectors import BEVFormer
+from llava.model.multimodal_encoder.bev_mmdet3d.models.backbone import ResNet
+from llava.model.multimodal_encoder.bev_mmdet3d.models.necks import FPN
+from llava.model.multimodal_encoder.bev_mmdet3d.models.dense_heads import BEVFormerHead
+from llava.model.multimodal_encoder.bev_mmdet3d.models.modules import (
     PerceptionTransformer,
     BEVFormerEncoder,
     BEVFormerLayer,
@@ -49,6 +49,9 @@ _num_levels_ = 4
 bev_h_ = 200
 bev_w_ = 200
 queue_length = 4  # each sequence contains `queue_length` frames.
+aggregation_ops = "max_pooling" # avg_pooling, max_pooling, convolution
+load_ckpt = "/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/ckpts/bevformer_r101_dcn_24ep.pth"
+dim_scale = 4
 
 model = dict(
     type=BEVFormer,
@@ -181,3 +184,91 @@ model = dict(
         ),
     ),
 )
+
+from llava.model.multimodal_encoder.bev_mmdet3d.datasets.pipelines import (
+    LoadMultiViewImageFromFiles,
+    LoadAnnotations3D,
+    ObjectRangeFilter,
+    ObjectNameFilter,
+    MultiScaleFlipAug3D,
+    CropResizeFlipImage,
+    NormalizeMultiviewImage,
+    PadMultiViewImage,
+    DefaultFormatBundle3D,
+    CustomCollect3D,
+    PhotoMetricDistortionMultiViewImage,
+    GlobalRotScaleTransImage,
+)
+
+
+dataset_type = 'CustomNuScenesDataset'
+data_root = '/home/scratch.chaoweix_nvresearch/av/AV-GPT/data/nuscenes/'
+nuscenes_qa_file = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/nuscenes-qa/'
+file_client_args = dict(backend='disk')
+
+
+train_pipeline = [
+    dict(type=LoadMultiViewImageFromFiles, to_float32=True),
+    dict(type=PhotoMetricDistortionMultiViewImage),
+    # dict(type=LoadAnnotations3D, with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
+    # dict(type=ObjectRangeFilter, point_cloud_range=point_cloud_range),
+    # dict(type=ObjectNameFilter, classes=class_names),
+    dict(type=NormalizeMultiviewImage, **img_norm_cfg),
+    dict(type=PadMultiViewImage, size_divisor=32),
+    # dict(type=DefaultFormatBundle3D, class_names=class_names),
+    # dict(type=CustomCollect3D, keys=['gt_bboxes_3d', 'gt_labels_3d', 'img'])
+]
+
+test_pipeline = [
+    dict(type=LoadMultiViewImageFromFiles, to_float32=True),
+    dict(type=NormalizeMultiviewImage, **img_norm_cfg),
+    dict(type=PadMultiViewImage, size_divisor=32),
+    dict(
+        type=MultiScaleFlipAug3D,
+        img_scale=(1600, 900),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type=DefaultFormatBundle3D,
+                class_names=class_names,
+                with_label=False),
+            dict(type=CustomCollect3D, keys=['img'])
+        ])
+]
+
+data = dict(
+    samples_per_gpu=1,
+    workers_per_gpu=4,
+    train=dict(
+        type=dataset_type,
+        data_root=data_root,
+        ann_file=data_root + 'nuscenes_infos_temporal_train.pkl',
+        nuscenes_qa_file=nuscenes_qa_file + "NuScenes_train_questions.json",
+        pipeline=train_pipeline,
+        classes=class_names,
+        modality=input_modality,
+        test_mode=False,
+        use_valid_flag=True,
+        bev_size=(bev_h_, bev_w_),
+        queue_length=queue_length,
+        # we use box_type_3d='LiDAR' in kitti and nuscenes dataset
+        # and box_type_3d='Depth' in sunrgbd and scannet dataset.
+        box_type_3d='LiDAR'),
+    val=dict(type=dataset_type,
+             data_root=data_root,
+             ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+             nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+             pipeline=test_pipeline,  bev_size=(bev_h_, bev_w_),
+             classes=class_names, modality=input_modality, samples_per_gpu=1),
+    test=dict(type=dataset_type,
+              data_root=data_root,
+              ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+              nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+              pipeline=test_pipeline, bev_size=(bev_h_, bev_w_),
+              classes=class_names, modality=input_modality),
+    shuffler_sampler=dict(type='DistributedGroupSampler'),
+    nonshuffler_sampler=dict(type='DistributedSampler')
+)
+
+evaluation = dict(interval=1, pipeline=test_pipeline)

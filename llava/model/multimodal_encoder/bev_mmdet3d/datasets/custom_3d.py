@@ -6,13 +6,39 @@ import warnings
 from os import path as osp
 from torch.utils.data import Dataset
 
-from mmdet.datasets import DATASETS
-from mmdet.datasets.pipelines import Compose
-from ..core.bbox import get_box_type
-from .utils import extract_result_dict, get_loading_pipeline
+import mmengine
+from mmengine import MODELS
+from mmengine.dataset import Compose
+from mmdet3d.structures import get_box_type
 
 
-@DATASETS.register_module()
+def extract_result_dict(results, key):
+    """Extract and return the data corresponding to key in result dict.
+
+    ``results`` is a dict output from `pipeline(input_dict)`, which is the
+        loaded data from ``Dataset`` class.
+    The data terms inside may be wrapped in list, tuple and DataContainer, so
+        this function essentially extracts data from these wrappers.
+
+    Args:
+        results (dict): Data loaded using pipeline.
+        key (str): Key of the desired data.
+
+    Returns:
+        np.ndarray | torch.Tensor | None: Data term.
+    """
+    if key not in results.keys():
+        return None
+    # results[key] may be data or list[data] or tuple[data]
+    # data may be wrapped inside DataContainer
+    data = results[key]
+    if isinstance(data, (list, tuple)):
+        data = data[0]
+    # if isinstance(data, mmcv.parallel.DataContainer):
+    #     data = data._data
+    return data
+
+@MODELS.register_module()
 class Custom3DDataset(Dataset):
     """Customized 3D dataset.
 
@@ -42,17 +68,15 @@ class Custom3DDataset(Dataset):
             Defaults to False.
     """
 
-    def __init__(
-        self,
-        data_root,
-        ann_file,
-        pipeline=None,
-        classes=None,
-        modality=None,
-        box_type_3d="LiDAR",
-        filter_empty_gt=True,
-        test_mode=False,
-    ):
+    def __init__(self,
+                 data_root,
+                 ann_file,
+                 pipeline=None,
+                 classes=None,
+                 modality=None,
+                 box_type_3d='LiDAR',
+                 filter_empty_gt=True,
+                 test_mode=False):
         super().__init__()
         self.data_root = data_root
         self.ann_file = ann_file
@@ -81,7 +105,7 @@ class Custom3DDataset(Dataset):
         Returns:
             list[dict]: List of annotations.
         """
-        return mmcv.load(ann_file)
+        return mmengine.load(ann_file)
 
     def get_data_info(self, index):
         """Get data info according to the given index.
@@ -99,17 +123,18 @@ class Custom3DDataset(Dataset):
                 - ann_info (dict): Annotation info.
         """
         info = self.data_infos[index]
-        sample_idx = info["point_cloud"]["lidar_idx"]
-        pts_filename = osp.join(self.data_root, info["pts_path"])
+        sample_idx = info['point_cloud']['lidar_idx']
+        pts_filename = osp.join(self.data_root, info['pts_path'])
 
         input_dict = dict(
-            pts_filename=pts_filename, sample_idx=sample_idx, file_name=pts_filename
-        )
+            pts_filename=pts_filename,
+            sample_idx=sample_idx,
+            file_name=pts_filename)
 
         if not self.test_mode:
             annos = self.get_ann_info(index)
-            input_dict["ann_info"] = annos
-            if self.filter_empty_gt and ~(annos["gt_labels_3d"] != -1).any():
+            input_dict['ann_info'] = annos
+            if self.filter_empty_gt and ~(annos['gt_labels_3d'] != -1).any():
                 return None
         return input_dict
 
@@ -129,15 +154,15 @@ class Custom3DDataset(Dataset):
                 - box_type_3d (str): 3D box type.
                 - box_mode_3d (str): 3D box mode.
         """
-        results["img_fields"] = []
-        results["bbox3d_fields"] = []
-        results["pts_mask_fields"] = []
-        results["pts_seg_fields"] = []
-        results["bbox_fields"] = []
-        results["mask_fields"] = []
-        results["seg_fields"] = []
-        results["box_type_3d"] = self.box_type_3d
-        results["box_mode_3d"] = self.box_mode_3d
+        results['img_fields'] = []
+        results['bbox3d_fields'] = []
+        results['pts_mask_fields'] = []
+        results['pts_seg_fields'] = []
+        results['bbox_fields'] = []
+        results['mask_fields'] = []
+        results['seg_fields'] = []
+        results['box_type_3d'] = self.box_type_3d
+        results['box_mode_3d'] = self.box_mode_3d
 
     def prepare_train_data(self, index):
         """Training data preparation.
@@ -153,9 +178,9 @@ class Custom3DDataset(Dataset):
             return None
         self.pre_pipeline(input_dict)
         example = self.pipeline(input_dict)
-        if self.filter_empty_gt and (
-            example is None or ~(example["gt_labels_3d"]._data != -1).any()
-        ):
+        if self.filter_empty_gt and \
+                (example is None or
+                    ~(example['gt_labels_3d']._data != -1).any()):
             return None
         return example
 
@@ -192,15 +217,18 @@ class Custom3DDataset(Dataset):
 
         if isinstance(classes, str):
             # take it as a file path
-            class_names = mmcv.list_from_file(classes)
+            class_names = mmengine.list_from_file(classes)
         elif isinstance(classes, (tuple, list)):
             class_names = classes
         else:
-            raise ValueError(f"Unsupported type {type(classes)} of classes.")
+            raise ValueError(f'Unsupported type {type(classes)} of classes.')
 
         return class_names
 
-    def format_results(self, outputs, pklfile_prefix=None, submission_prefix=None):
+    def format_results(self,
+                       outputs,
+                       pklfile_prefix=None,
+                       submission_prefix=None):
         """Format the results to pkl file.
 
         Args:
@@ -216,21 +244,19 @@ class Custom3DDataset(Dataset):
         """
         if pklfile_prefix is None:
             tmp_dir = tempfile.TemporaryDirectory()
-            pklfile_prefix = osp.join(tmp_dir.name, "results")
-            out = f"{pklfile_prefix}.pkl"
-        mmcv.dump(outputs, out)
+            pklfile_prefix = osp.join(tmp_dir.name, 'results')
+            out = f'{pklfile_prefix}.pkl'
+        mmengine.dump(outputs, out)
         return outputs, tmp_dir
 
-    def evaluate(
-        self,
-        results,
-        metric=None,
-        iou_thr=(0.25, 0.5),
-        logger=None,
-        show=False,
-        out_dir=None,
-        pipeline=None,
-    ):
+    def evaluate(self,
+                 results,
+                 metric=None,
+                 iou_thr=(0.25, 0.5),
+                 logger=None,
+                 show=False,
+                 out_dir=None,
+                 pipeline=None):
         """Evaluate.
 
         Evaluation in indoor protocol.
@@ -249,17 +275,15 @@ class Custom3DDataset(Dataset):
         Returns:
             dict: Evaluation results.
         """
-        from ..core.evaluation.indoor_eval import indoor_eval
-
+        from mmdet3d.core.evaluation import indoor_eval
         assert isinstance(
-            results, list
-        ), f"Expect results to be list, got {type(results)}."
-        assert len(results) > 0, "Expect length of results > 0."
+            results, list), f'Expect results to be list, got {type(results)}.'
+        assert len(results) > 0, 'Expect length of results > 0.'
         assert len(results) == len(self.data_infos)
         assert isinstance(
             results[0], dict
-        ), f"Expect elements in results to be dict, got {type(results[0])}."
-        gt_annos = [info["annos"] for info in self.data_infos]
+        ), f'Expect elements in results to be dict, got {type(results[0])}.'
+        gt_annos = [info['annos'] for info in self.data_infos]
         label2cat = {i: cat_id for i, cat_id in enumerate(self.CLASSES)}
         ret_dict = indoor_eval(
             gt_annos,
@@ -268,8 +292,7 @@ class Custom3DDataset(Dataset):
             label2cat,
             logger=logger,
             box_type_3d=self.box_type_3d,
-            box_mode_3d=self.box_mode_3d,
-        )
+            box_mode_3d=self.box_mode_3d)
         if show:
             self.show(results, out_dir, pipeline=pipeline)
 
@@ -277,10 +300,8 @@ class Custom3DDataset(Dataset):
 
     def _build_default_pipeline(self):
         """Build the default pipeline for this dataset."""
-        raise NotImplementedError(
-            "_build_default_pipeline is not implemented "
-            f"for dataset {self.__class__.__name__}"
-        )
+        raise NotImplementedError('_build_default_pipeline is not implemented '
+                                  f'for dataset {self.__class__.__name__}')
 
     def _get_pipeline(self, pipeline):
         """Get data loading pipeline in self.show/evaluate function.
@@ -289,15 +310,14 @@ class Custom3DDataset(Dataset):
             pipeline (list[dict] | None): Input pipeline. If None is given, \
                 get from self.pipeline.
         """
-        if pipeline is None:
-            if not hasattr(self, "pipeline") or self.pipeline is None:
-                warnings.warn(
-                    "Use default pipeline for data loading, this may cause "
-                    "errors when data is on ceph"
-                )
-                return self._build_default_pipeline()
-            loading_pipeline = get_loading_pipeline(self.pipeline.transforms)
-            return Compose(loading_pipeline)
+        # if pipeline is None:
+        #     if not hasattr(self, 'pipeline') or self.pipeline is None:
+        #         warnings.warn(
+        #             'Use default pipeline for data loading, this may cause '
+        #             'errors when data is on ceph')
+        #         return self._build_default_pipeline()
+        #     loading_pipeline = get_loading_pipeline(self.pipeline.transforms)
+        #     return Compose(loading_pipeline)
         return Compose(pipeline)
 
     def _extract_data(self, index, pipeline, key, load_annos=False):
@@ -314,7 +334,7 @@ class Custom3DDataset(Dataset):
             np.ndarray | torch.Tensor | list[np.ndarray | torch.Tensor]:
                 A single or a list of loaded data.
         """
-        assert pipeline is not None, "data loading pipeline is not provided"
+        assert pipeline is not None, 'data loading pipeline is not provided'
         # when we want to load ground-truth via pipeline (e.g. bbox, seg mask)
         # we need to set self.test_mode as False so that we have 'annos'
         if load_annos:

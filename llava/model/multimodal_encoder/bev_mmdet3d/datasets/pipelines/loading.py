@@ -1,17 +1,15 @@
-# Copyright (c) OpenMMLab. All rights reserved.
-import torch
-from PIL import Image
-from pyquaternion import Quaternion
-import mmcv
 import numpy as np
+import torch
+from numpy import random
+import mmcv
+import mmengine
+from mmengine import MODELS
+from mmengine.registry import TRANSFORMS
+from mmdet3d.structures import DepthInstance3DBoxes, CameraInstance3DBoxes
 
-from third_party.bev_mmdet3d.core.points import BasePoints, get_points_type
-from mmdet.datasets.builder import PIPELINES
-from mmdet.datasets.pipelines import LoadAnnotations, LoadImageFromFile
-from ...core.bbox import LiDARInstance3DBoxes
 
 
-@PIPELINES.register_module()
+@TRANSFORMS.register_module()
 class LoadMultiViewImageFromFiles(object):
     """Load multi channel images from a list of separate channel files.
 
@@ -23,7 +21,7 @@ class LoadMultiViewImageFromFiles(object):
         color_type (str): Color type of the file. Defaults to 'unchanged'.
     """
 
-    def __init__(self, to_float32=False, color_type="unchanged"):
+    def __init__(self, to_float32=False, color_type='unchanged'):
         self.to_float32 = to_float32
         self.color_type = color_type
 
@@ -45,432 +43,227 @@ class LoadMultiViewImageFromFiles(object):
                 - scale_factor (float): Scale factor.
                 - img_norm_cfg (dict): Normalization configuration of images.
         """
-        filename = results["img_filename"]
+        filename = results['img_filename']
         # img is of shape (h, w, c, num_views)
         img = np.stack(
-            [mmcv.imread(name, self.color_type) for name in filename], axis=-1
-        )
+            [mmcv.imread(name, self.color_type) for name in filename], axis=-1)
         if self.to_float32:
             img = img.astype(np.float32)
-        results["filename"] = filename
+        results['filename'] = filename
         # unravel to list, see `DefaultFormatBundle` in formating.py
         # which will transpose each image separately and then stack into array
-        results["img"] = [img[..., i] for i in range(img.shape[-1])]
-        results["img_shape"] = img.shape
-        results["ori_shape"] = img.shape
+        results['img'] = [img[..., i] for i in range(img.shape[-1])]
+        results['img_shape'] = img.shape
+        results['ori_shape'] = img.shape
         # Set initial values for default meta_keys
-        results["pad_shape"] = img.shape
-        results["scale_factor"] = 1.0
+        results['pad_shape'] = img.shape
+        results['scale_factor'] = 1.0
         num_channels = 1 if len(img.shape) < 3 else img.shape[2]
-        results["img_norm_cfg"] = dict(
+        results['img_norm_cfg'] = dict(
             mean=np.zeros(num_channels, dtype=np.float32),
             std=np.ones(num_channels, dtype=np.float32),
-            to_rgb=False,
-        )
+            to_rgb=False)
         return results
 
     def __repr__(self):
         """str: Return a string that describes the module."""
         repr_str = self.__class__.__name__
-        repr_str += f"(to_float32={self.to_float32}, "
+        repr_str += f'(to_float32={self.to_float32}, '
         repr_str += f"color_type='{self.color_type}')"
         return repr_str
 
-
-@PIPELINES.register_module()
-class LoadImageFromFileMono3D(LoadImageFromFile):
-    """Load an image from file in monocular 3D object detection. Compared to 2D
-    detection, additional camera parameters need to be loaded.
+class LoadAnnotations(object):
+    """Load multiple types of annotations.
 
     Args:
-        kwargs (dict): Arguments are the same as those in \
-            :class:`LoadImageFromFile`.
+        with_bbox (bool): Whether to parse and load the bbox annotation.
+             Default: True.
+        with_label (bool): Whether to parse and load the label annotation.
+            Default: True.
+        with_mask (bool): Whether to parse and load the mask annotation.
+             Default: False.
+        with_seg (bool): Whether to parse and load the semantic segmentation
+            annotation. Default: False.
+        poly2mask (bool): Whether to convert the instance masks from polygons
+            to bitmaps. Default: True.
+        file_client_args (dict): Arguments to instantiate a FileClient.
+            See :class:`mmcv.fileio.FileClient` for details.
+            Defaults to ``dict(backend='disk')``.
     """
 
-    def __call__(self, results):
-        """Call functions to load image and get image meta information.
+    def __init__(self,
+                 with_bbox=True,
+                 with_label=True,
+                 with_mask=False,
+                 with_seg=False,
+                 poly2mask=True,
+                 file_client_args=dict(backend='disk')):
+        self.with_bbox = with_bbox
+        self.with_label = with_label
+        self.with_mask = with_mask
+        self.with_seg = with_seg
+        self.poly2mask = poly2mask
+        self.file_client_args = file_client_args.copy()
+        self.file_client = None
+
+    def _load_bboxes(self, results):
+        """Private function to load bounding box annotations.
 
         Args:
             results (dict): Result dict from :obj:`mmdet.CustomDataset`.
 
         Returns:
-            dict: The dict contains loaded image and meta information.
+            dict: The dict contains loaded bounding box annotations.
         """
-        super().__call__(results)
-        results["cam2img"] = results["img_info"]["cam_intrinsic"]
+
+        ann_info = results['ann_info']
+        results['gt_bboxes'] = ann_info['bboxes'].copy()
+
+        gt_bboxes_ignore = ann_info.get('bboxes_ignore', None)
+        if gt_bboxes_ignore is not None:
+            results['gt_bboxes_ignore'] = gt_bboxes_ignore.copy()
+            results['bbox_fields'].append('gt_bboxes_ignore')
+        results['bbox_fields'].append('gt_bboxes')
         return results
 
-
-@PIPELINES.register_module()
-class LoadPointsFromMultiSweeps(object):
-    """Load points from multiple sweeps.
-
-    This is usually used for nuScenes dataset to utilize previous sweeps.
-
-    Args:
-        sweeps_num (int): Number of sweeps. Defaults to 10.
-        load_dim (int): Dimension number of the loaded points. Defaults to 5.
-        use_dim (list[int]): Which dimension to use. Defaults to [0, 1, 2, 4].
-        file_client_args (dict): Config dict of file clients, refer to
-            https://github.com/open-mmlab/mmcv/blob/master/mmcv/fileio/file_client.py
-            for more details. Defaults to dict(backend='disk').
-        pad_empty_sweeps (bool): Whether to repeat keyframe when
-            sweeps is empty. Defaults to False.
-        remove_close (bool): Whether to remove close points.
-            Defaults to False.
-        test_mode (bool): If test_model=True used for testing, it will not
-            randomly sample sweeps but select the nearest N frames.
-            Defaults to False.
-    """
-
-    def __init__(
-        self,
-        sweeps_num=10,
-        load_dim=5,
-        use_dim=[0, 1, 2, 4],
-        file_client_args=dict(backend="disk"),
-        pad_empty_sweeps=False,
-        remove_close=False,
-        test_mode=False,
-    ):
-        self.load_dim = load_dim
-        self.sweeps_num = sweeps_num
-        self.use_dim = use_dim
-        self.file_client_args = file_client_args.copy()
-        self.file_client = None
-        self.pad_empty_sweeps = pad_empty_sweeps
-        self.remove_close = remove_close
-        self.test_mode = test_mode
-
-    def _load_points(self, pts_filename):
-        """Private function to load point clouds data.
+    def _load_labels(self, results):
+        """Private function to load label annotations.
 
         Args:
-            pts_filename (str): Filename of point clouds data.
+            results (dict): Result dict from :obj:`mmdet.CustomDataset`.
 
         Returns:
-            np.ndarray: An array containing point clouds data.
+            dict: The dict contains loaded label annotations.
         """
-        if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
-        try:
-            pts_bytes = self.file_client.get(pts_filename)
-            points = np.frombuffer(pts_bytes, dtype=np.float32)
-        except ConnectionError:
-            mmcv.check_file_exist(pts_filename)
-            if pts_filename.endswith(".npy"):
-                points = np.load(pts_filename)
-            else:
-                points = np.fromfile(pts_filename, dtype=np.float32)
-        return points
 
-    def _remove_close(self, points, radius=1.0):
-        """Removes point too close within a certain radius from origin.
+        results['gt_labels'] = results['ann_info']['labels'].copy()
+        return results
+
+    def _poly2mask(self, mask_ann, img_h, img_w):
+        """Private function to convert masks represented with polygon to
+        bitmaps.
 
         Args:
-            points (np.ndarray | :obj:`BasePoints`): Sweep points.
-            radius (float): Radius below which points are removed.
-                Defaults to 1.0.
+            mask_ann (list | dict): Polygon mask annotation input.
+            img_h (int): The height of output mask.
+            img_w (int): The width of output mask.
 
         Returns:
-            np.ndarray: Points after removing.
+            numpy.ndarray: The decode bitmap mask of shape (img_h, img_w).
         """
-        if isinstance(points, np.ndarray):
-            points_numpy = points
-        elif isinstance(points, BasePoints):
-            points_numpy = points.tensor.numpy()
+
+        if isinstance(mask_ann, list):
+            # polygon -- a single object might consist of multiple parts
+            # we merge all parts into one mask rle code
+            rles = maskUtils.frPyObjects(mask_ann, img_h, img_w)
+            rle = maskUtils.merge(rles)
+        elif isinstance(mask_ann['counts'], list):
+            # uncompressed RLE
+            rle = maskUtils.frPyObjects(mask_ann, img_h, img_w)
         else:
-            raise NotImplementedError
-        x_filt = np.abs(points_numpy[:, 0]) < radius
-        y_filt = np.abs(points_numpy[:, 1]) < radius
-        not_close = np.logical_not(np.logical_and(x_filt, y_filt))
-        return points[not_close]
+            # rle
+            rle = mask_ann
+        mask = maskUtils.decode(rle)
+        return mask
 
-    def __call__(self, results):
-        """Call function to load multi-sweep point clouds from files.
+    def process_polygons(self, polygons):
+        """Convert polygons to list of ndarray and filter invalid polygons.
 
         Args:
-            results (dict): Result dict containing multi-sweep point cloud \
-                filenames.
+            polygons (list[list]): Polygons of one instance.
 
         Returns:
-            dict: The result dict containing the multi-sweep points data. \
-                Added key and value are described below.
-
-                - points (np.ndarray | :obj:`BasePoints`): Multi-sweep point \
-                    cloud arrays.
+            list[numpy.ndarray]: Processed polygons.
         """
-        points = results["points"]
-        points.tensor[:, 4] = 0
-        sweep_points_list = [points]
-        ts = results["timestamp"]
-        if self.pad_empty_sweeps and len(results["sweeps"]) == 0:
-            for i in range(self.sweeps_num):
-                if self.remove_close:
-                    sweep_points_list.append(self._remove_close(points))
-                else:
-                    sweep_points_list.append(points)
+
+        polygons = [np.array(p) for p in polygons]
+        valid_polygons = []
+        for polygon in polygons:
+            if len(polygon) % 2 == 0 and len(polygon) >= 6:
+                valid_polygons.append(polygon)
+        return valid_polygons
+
+    def _load_masks(self, results):
+        """Private function to load mask annotations.
+
+        Args:
+            results (dict): Result dict from :obj:`mmdet.CustomDataset`.
+
+        Returns:
+            dict: The dict contains loaded mask annotations.
+                If ``self.poly2mask`` is set ``True``, `gt_mask` will contain
+                :obj:`PolygonMasks`. Otherwise, :obj:`BitmapMasks` is used.
+        """
+
+        h, w = results['img_info']['height'], results['img_info']['width']
+        gt_masks = results['ann_info']['masks']
+        if self.poly2mask:
+            gt_masks = BitmapMasks(
+                [self._poly2mask(mask, h, w) for mask in gt_masks], h, w)
         else:
-            if len(results["sweeps"]) <= self.sweeps_num:
-                choices = np.arange(len(results["sweeps"]))
-            elif self.test_mode:
-                choices = np.arange(self.sweeps_num)
-            else:
-                choices = np.random.choice(
-                    len(results["sweeps"]), self.sweeps_num, replace=False
-                )
-            for idx in choices:
-                sweep = results["sweeps"][idx]
-                points_sweep = self._load_points(sweep["data_path"])
-                points_sweep = np.copy(points_sweep).reshape(-1, self.load_dim)
-                if self.remove_close:
-                    points_sweep = self._remove_close(points_sweep)
-                sweep_ts = sweep["timestamp"] / 1e6
-                points_sweep[:, :3] = (
-                    points_sweep[:, :3] @ sweep["sensor2lidar_rotation"].T
-                )
-                points_sweep[:, :3] += sweep["sensor2lidar_translation"]
-                points_sweep[:, 4] = ts - sweep_ts
-                points_sweep = points.new_point(points_sweep)
-                sweep_points_list.append(points_sweep)
-
-        points = points.cat(sweep_points_list)
-        points = points[:, self.use_dim]
-        results["points"] = points
+            gt_masks = PolygonMasks(
+                [self.process_polygons(polygons) for polygons in gt_masks], h,
+                w)
+        results['gt_masks'] = gt_masks
+        results['mask_fields'].append('gt_masks')
         return results
 
-    def __repr__(self):
-        """str: Return a string that describes the module."""
-        return f"{self.__class__.__name__}(sweeps_num={self.sweeps_num})"
-
-
-@PIPELINES.register_module()
-class PointSegClassMapping(object):
-    """Map original semantic class to valid category ids.
-
-    Map valid classes as 0~len(valid_cat_ids)-1 and
-    others as len(valid_cat_ids).
-
-    Args:
-        valid_cat_ids (tuple[int]): A tuple of valid category.
-        max_cat_id (int): The max possible cat_id in input segmentation mask.
-            Defaults to 40.
-    """
-
-    def __init__(self, valid_cat_ids, max_cat_id=40):
-        assert max_cat_id >= np.max(
-            valid_cat_ids
-        ), "max_cat_id should be greater than maximum id in valid_cat_ids"
-
-        self.valid_cat_ids = valid_cat_ids
-        self.max_cat_id = int(max_cat_id)
-
-        # build cat_id to class index mapping
-        neg_cls = len(valid_cat_ids)
-        self.cat_id2class = np.ones(self.max_cat_id + 1, dtype=np.int) * neg_cls
-        for cls_idx, cat_id in enumerate(valid_cat_ids):
-            self.cat_id2class[cat_id] = cls_idx
-
-    def __call__(self, results):
-        """Call function to map original semantic class to valid category ids.
+    def _load_semantic_seg(self, results):
+        """Private function to load semantic segmentation annotations.
 
         Args:
-            results (dict): Result dict containing point semantic masks.
+            results (dict): Result dict from :obj:`dataset`.
 
         Returns:
-            dict: The result dict containing the mapped category ids. \
-                Updated key and value are described below.
-
-                - pts_semantic_mask (np.ndarray): Mapped semantic masks.
+            dict: The dict contains loaded semantic segmentation annotations.
         """
-        assert "pts_semantic_mask" in results
-        pts_semantic_mask = results["pts_semantic_mask"]
 
-        converted_pts_sem_mask = self.cat_id2class[pts_semantic_mask]
-
-        results["pts_semantic_mask"] = converted_pts_sem_mask
-        return results
-
-    def __repr__(self):
-        """str: Return a string that describes the module."""
-        repr_str = self.__class__.__name__
-        repr_str += f"(valid_cat_ids={self.valid_cat_ids}, "
-        repr_str += f"max_cat_id={self.max_cat_id})"
-        return repr_str
-
-
-@PIPELINES.register_module()
-class NormalizePointsColor(object):
-    """Normalize color of points.
-
-    Args:
-        color_mean (list[float]): Mean color of the point cloud.
-    """
-
-    def __init__(self, color_mean):
-        self.color_mean = color_mean
-
-    def __call__(self, results):
-        """Call function to normalize color of points.
-
-        Args:
-            results (dict): Result dict containing point clouds data.
-
-        Returns:
-            dict: The result dict containing the normalized points. \
-                Updated key and value are described below.
-
-                - points (:obj:`BasePoints`): Points after color normalization.
-        """
-        points = results["points"]
-        assert (
-            points.attribute_dims is not None
-            and "color" in points.attribute_dims.keys()
-        ), "Expect points have color attribute"
-        if self.color_mean is not None:
-            points.color = points.color - points.color.new_tensor(self.color_mean)
-        points.color = points.color / 255.0
-        results["points"] = points
-        return results
-
-    def __repr__(self):
-        """str: Return a string that describes the module."""
-        repr_str = self.__class__.__name__
-        repr_str += f"(color_mean={self.color_mean})"
-        return repr_str
-
-
-@PIPELINES.register_module()
-class LoadPointsFromFile(object):
-    """Load Points From File.
-
-    Load sunrgbd and scannet points from file.
-
-    Args:
-        coord_type (str): The type of coordinates of points cloud.
-            Available options includes:
-            - 'LIDAR': Points in LiDAR coordinates.
-            - 'DEPTH': Points in depth coordinates, usually for indoor dataset.
-            - 'CAMERA': Points in camera coordinates.
-        load_dim (int): The dimension of the loaded points.
-            Defaults to 6.
-        use_dim (list[int]): Which dimensions of the points to be used.
-            Defaults to [0, 1, 2]. For KITTI dataset, set use_dim=4
-            or use_dim=[0, 1, 2, 3] to use the intensity dimension.
-        shift_height (bool): Whether to use shifted height. Defaults to False.
-        use_color (bool): Whether to use color features. Defaults to False.
-        file_client_args (dict): Config dict of file clients, refer to
-            https://github.com/open-mmlab/mmcv/blob/master/mmcv/fileio/file_client.py
-            for more details. Defaults to dict(backend='disk').
-    """
-
-    def __init__(
-        self,
-        coord_type,
-        load_dim=6,
-        use_dim=[0, 1, 2],
-        shift_height=False,
-        use_color=False,
-        file_client_args=dict(backend="disk"),
-    ):
-        self.shift_height = shift_height
-        self.use_color = use_color
-        if isinstance(use_dim, int):
-            use_dim = list(range(use_dim))
-        assert (
-            max(use_dim) < load_dim
-        ), f"Expect all used dimensions < {load_dim}, got {use_dim}"
-        assert coord_type in ["CAMERA", "LIDAR", "DEPTH"]
-
-        self.coord_type = coord_type
-        self.load_dim = load_dim
-        self.use_dim = use_dim
-        self.file_client_args = file_client_args.copy()
-        self.file_client = None
-
-    def _load_points(self, pts_filename):
-        """Private function to load point clouds data.
-
-        Args:
-            pts_filename (str): Filename of point clouds data.
-
-        Returns:
-            np.ndarray: An array containing point clouds data.
-        """
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
-        try:
-            pts_bytes = self.file_client.get(pts_filename)
-            points = np.frombuffer(pts_bytes, dtype=np.float32)
-        except ConnectionError:
-            mmcv.check_file_exist(pts_filename)
-            if pts_filename.endswith(".npy"):
-                points = np.load(pts_filename)
-            else:
-                points = np.fromfile(pts_filename, dtype=np.float32)
+            self.file_client = mmengine.FileClient(**self.file_client_args)
 
-        return points
+        filename = osp.join(results['seg_prefix'],
+                            results['ann_info']['seg_map'])
+        img_bytes = self.file_client.get(filename)
+        results['gt_semantic_seg'] = mmengine.imfrombytes(
+            img_bytes, flag='unchanged').squeeze()
+        results['seg_fields'].append('gt_semantic_seg')
+        return results
 
     def __call__(self, results):
-        """Call function to load points data from file.
+        """Call function to load multiple types annotations.
 
         Args:
-            results (dict): Result dict containing point clouds data.
+            results (dict): Result dict from :obj:`mmdet.CustomDataset`.
 
         Returns:
-            dict: The result dict containing the point clouds data. \
-                Added key and value are described below.
-
-                - points (:obj:`BasePoints`): Point clouds data.
+            dict: The dict contains loaded bounding box, label, mask and
+                semantic segmentation annotations.
         """
-        pts_filename = results["pts_filename"]
-        points = self._load_points(pts_filename)
-        points = points.reshape(-1, self.load_dim)
-        points = points[:, self.use_dim]
-        attribute_dims = None
 
-        if self.shift_height:
-            floor_height = np.percentile(points[:, 2], 0.99)
-            height = points[:, 2] - floor_height
-            points = np.concatenate(
-                [points[:, :3], np.expand_dims(height, 1), points[:, 3:]], 1
-            )
-            attribute_dims = dict(height=3)
-
-        if self.use_color:
-            assert len(self.use_dim) >= 6
-            if attribute_dims is None:
-                attribute_dims = dict()
-            attribute_dims.update(
-                dict(
-                    color=[
-                        points.shape[1] - 3,
-                        points.shape[1] - 2,
-                        points.shape[1] - 1,
-                    ]
-                )
-            )
-
-        points_class = get_points_type(self.coord_type)
-        points = points_class(
-            points, points_dim=points.shape[-1], attribute_dims=attribute_dims
-        )
-        results["points"] = points
-
+        if self.with_bbox:
+            results = self._load_bboxes(results)
+            if results is None:
+                return None
+        if self.with_label:
+            results = self._load_labels(results)
+        if self.with_mask:
+            results = self._load_masks(results)
+        if self.with_seg:
+            results = self._load_semantic_seg(results)
         return results
 
     def __repr__(self):
-        """str: Return a string that describes the module."""
-        repr_str = self.__class__.__name__ + "("
-        repr_str += f"shift_height={self.shift_height}, "
-        repr_str += f"use_color={self.use_color}, "
-        repr_str += f"file_client_args={self.file_client_args}, "
-        repr_str += f"load_dim={self.load_dim}, "
-        repr_str += f"use_dim={self.use_dim})"
+        repr_str = self.__class__.__name__
+        repr_str += f'(with_bbox={self.with_bbox}, '
+        repr_str += f'with_label={self.with_label}, '
+        repr_str += f'with_mask={self.with_mask}, '
+        repr_str += f'with_seg={self.with_seg}, '
+        repr_str += f'poly2mask={self.poly2mask}, '
+        repr_str += f'poly2mask={self.file_client_args})'
         return repr_str
 
 
-@PIPELINES.register_module()
+@TRANSFORMS.register_module()
 class LoadAnnotations3D(LoadAnnotations):
     """Load Annotations3D.
 
@@ -507,30 +300,27 @@ class LoadAnnotations3D(LoadAnnotations):
             for more details.
     """
 
-    def __init__(
-        self,
-        with_bbox_3d=True,
-        with_label_3d=True,
-        with_attr_label=False,
-        with_mask_3d=False,
-        with_seg_3d=False,
-        with_bbox=False,
-        with_label=False,
-        with_mask=False,
-        with_seg=False,
-        with_bbox_depth=False,
-        poly2mask=True,
-        seg_3d_dtype="int",
-        file_client_args=dict(backend="disk"),
-    ):
+    def __init__(self,
+                 with_bbox_3d=True,
+                 with_label_3d=True,
+                 with_attr_label=False,
+                 with_mask_3d=False,
+                 with_seg_3d=False,
+                 with_bbox=False,
+                 with_label=False,
+                 with_mask=False,
+                 with_seg=False,
+                 with_bbox_depth=False,
+                 poly2mask=True,
+                 seg_3d_dtype='int',
+                 file_client_args=dict(backend='disk')):
         super().__init__(
             with_bbox,
             with_label,
             with_mask,
             with_seg,
             poly2mask,
-            file_client_args=file_client_args,
-        )
+            file_client_args=file_client_args)
         self.with_bbox_3d = with_bbox_3d
         self.with_bbox_depth = with_bbox_depth
         self.with_label_3d = with_label_3d
@@ -548,8 +338,8 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing loaded 3D bounding box annotations.
         """
-        results["gt_bboxes_3d"] = results["ann_info"]["gt_bboxes_3d"]
-        results["bbox3d_fields"].append("gt_bboxes_3d")
+        results['gt_bboxes_3d'] = results['ann_info']['gt_bboxes_3d']
+        results['bbox3d_fields'].append('gt_bboxes_3d')
         return results
 
     def _load_bboxes_depth(self, results):
@@ -561,8 +351,8 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing loaded 2.5D bounding box annotations.
         """
-        results["centers2d"] = results["ann_info"]["centers2d"]
-        results["depths"] = results["ann_info"]["depths"]
+        results['centers2d'] = results['ann_info']['centers2d']
+        results['depths'] = results['ann_info']['depths']
         return results
 
     def _load_labels_3d(self, results):
@@ -574,7 +364,7 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing loaded label annotations.
         """
-        results["gt_labels_3d"] = results["ann_info"]["gt_labels_3d"]
+        results['gt_labels_3d'] = results['ann_info']['gt_labels_3d']
         return results
 
     def _load_attr_labels(self, results):
@@ -586,7 +376,7 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing loaded label annotations.
         """
-        results["attr_labels"] = results["ann_info"]["attr_labels"]
+        results['attr_labels'] = results['ann_info']['attr_labels']
         return results
 
     def _load_masks_3d(self, results):
@@ -598,19 +388,20 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing loaded 3D mask annotations.
         """
-        pts_instance_mask_path = results["ann_info"]["pts_instance_mask_path"]
+        pts_instance_mask_path = results['ann_info']['pts_instance_mask_path']
 
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = mmengine.FileClient(**self.file_client_args)
         try:
             mask_bytes = self.file_client.get(pts_instance_mask_path)
             pts_instance_mask = np.frombuffer(mask_bytes, dtype=np.int)
         except ConnectionError:
-            mmcv.check_file_exist(pts_instance_mask_path)
-            pts_instance_mask = np.fromfile(pts_instance_mask_path, dtype=np.long)
+            mmengine.check_file_exist(pts_instance_mask_path)
+            pts_instance_mask = np.fromfile(
+                pts_instance_mask_path, dtype=np.long)
 
-        results["pts_instance_mask"] = pts_instance_mask
-        results["pts_mask_fields"].append("pts_instance_mask")
+        results['pts_instance_mask'] = pts_instance_mask
+        results['pts_mask_fields'].append('pts_instance_mask')
         return results
 
     def _load_semantic_seg_3d(self, results):
@@ -622,22 +413,22 @@ class LoadAnnotations3D(LoadAnnotations):
         Returns:
             dict: The dict containing the semantic segmentation annotations.
         """
-        pts_semantic_mask_path = results["ann_info"]["pts_semantic_mask_path"]
+        pts_semantic_mask_path = results['ann_info']['pts_semantic_mask_path']
 
         if self.file_client is None:
-            self.file_client = mmcv.FileClient(**self.file_client_args)
+            self.file_client = mmengine.FileClient(**self.file_client_args)
         try:
             mask_bytes = self.file_client.get(pts_semantic_mask_path)
             # add .copy() to fix read-only bug
             pts_semantic_mask = np.frombuffer(
-                mask_bytes, dtype=self.seg_3d_dtype
-            ).copy()
+                mask_bytes, dtype=self.seg_3d_dtype).copy()
         except ConnectionError:
-            mmcv.check_file_exist(pts_semantic_mask_path)
-            pts_semantic_mask = np.fromfile(pts_semantic_mask_path, dtype=np.long)
+            mmengine.check_file_exist(pts_semantic_mask_path)
+            pts_semantic_mask = np.fromfile(
+                pts_semantic_mask_path, dtype=np.long)
 
-        results["pts_semantic_mask"] = pts_semantic_mask
-        results["pts_seg_fields"].append("pts_semantic_mask")
+        results['pts_semantic_mask'] = pts_semantic_mask
+        results['pts_seg_fields'].append('pts_semantic_mask')
         return results
 
     def __call__(self, results):
@@ -672,321 +463,17 @@ class LoadAnnotations3D(LoadAnnotations):
 
     def __repr__(self):
         """str: Return a string that describes the module."""
-        indent_str = "    "
-        repr_str = self.__class__.__name__ + "(\n"
-        repr_str += f"{indent_str}with_bbox_3d={self.with_bbox_3d}, "
-        repr_str += f"{indent_str}with_label_3d={self.with_label_3d}, "
-        repr_str += f"{indent_str}with_attr_label={self.with_attr_label}, "
-        repr_str += f"{indent_str}with_mask_3d={self.with_mask_3d}, "
-        repr_str += f"{indent_str}with_seg_3d={self.with_seg_3d}, "
-        repr_str += f"{indent_str}with_bbox={self.with_bbox}, "
-        repr_str += f"{indent_str}with_label={self.with_label}, "
-        repr_str += f"{indent_str}with_mask={self.with_mask}, "
-        repr_str += f"{indent_str}with_seg={self.with_seg}, "
-        repr_str += f"{indent_str}with_bbox_depth={self.with_bbox_depth}, "
-        repr_str += f"{indent_str}poly2mask={self.poly2mask})"
+        indent_str = '    '
+        repr_str = self.__class__.__name__ + '(\n'
+        repr_str += f'{indent_str}with_bbox_3d={self.with_bbox_3d}, '
+        repr_str += f'{indent_str}with_label_3d={self.with_label_3d}, '
+        repr_str += f'{indent_str}with_attr_label={self.with_attr_label}, '
+        repr_str += f'{indent_str}with_mask_3d={self.with_mask_3d}, '
+        repr_str += f'{indent_str}with_seg_3d={self.with_seg_3d}, '
+        repr_str += f'{indent_str}with_bbox={self.with_bbox}, '
+        repr_str += f'{indent_str}with_label={self.with_label}, '
+        repr_str += f'{indent_str}with_mask={self.with_mask}, '
+        repr_str += f'{indent_str}with_seg={self.with_seg}, '
+        repr_str += f'{indent_str}with_bbox_depth={self.with_bbox_depth}, '
+        repr_str += f'{indent_str}poly2mask={self.poly2mask})'
         return repr_str
-
-
-def mmlabNormalize(img):
-    from mmcv.image.photometric import imnormalize
-
-    mean = np.array([123.675, 116.28, 103.53], dtype=np.float32)
-    std = np.array([58.395, 57.12, 57.375], dtype=np.float32)
-    to_rgb = True
-    img = imnormalize(np.array(img), mean, std, to_rgb)
-    img = torch.tensor(img).float().permute(2, 0, 1).contiguous()
-    return img
-
-
-@PIPELINES.register_module()
-class PrepareImageInputs(object):
-    """Load multi channel images from a list of separate channel files.
-
-    Expects results['img_filename'] to be a list of filenames.
-
-    Args:
-        to_float32 (bool): Whether to convert the img to float32.
-            Defaults to False.
-        color_type (str): Color type of the file. Defaults to 'unchanged'.
-    """
-
-    def __init__(
-        self, data_config, is_train=False, sequential=False,
-    ):
-        self.is_train = is_train
-        self.data_config = data_config
-        self.normalize_img = mmlabNormalize
-        self.sequential = sequential
-
-    def get_rot(self, h):
-        return torch.Tensor([[np.cos(h), np.sin(h)], [-np.sin(h), np.cos(h)],])
-
-    def img_transform(
-        self, img, post_rot, post_tran, resize, resize_dims, crop, flip, rotate
-    ):
-        # adjust image
-        img = self.img_transform_core(img, resize_dims, crop, flip, rotate)
-
-        # post-homography transformation
-        post_rot *= resize
-        post_tran -= torch.Tensor(crop[:2])
-        if flip:
-            A = torch.Tensor([[-1, 0], [0, 1]])
-            b = torch.Tensor([crop[2] - crop[0], 0])
-            post_rot = A.matmul(post_rot)
-            post_tran = A.matmul(post_tran) + b
-        A = self.get_rot(rotate / 180 * np.pi)
-        b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
-        b = A.matmul(-b) + b
-        post_rot = A.matmul(post_rot)
-        post_tran = A.matmul(post_tran) + b
-
-        return img, post_rot, post_tran
-
-    def img_transform_core(self, img, resize_dims, crop, flip, rotate):
-        # adjust image
-        img = img.resize(resize_dims)
-        img = img.crop(crop)
-        if flip:
-            img = img.transpose(method=Image.FLIP_LEFT_RIGHT)
-        img = img.rotate(rotate)
-        return img
-
-    def choose_cams(self):
-        if self.is_train and self.data_config["Ncams"] < len(self.data_config["cams"]):
-            cam_names = np.random.choice(
-                self.data_config["cams"], self.data_config["Ncams"], replace=False
-            )
-        else:
-            cam_names = self.data_config["cams"]
-        return cam_names
-
-    def sample_augmentation(self, H, W, flip=None, scale=None):
-        fH, fW = self.data_config["input_size"]
-        if self.is_train:
-            resize = float(fW) / float(W)
-            resize += np.random.uniform(*self.data_config["resize"])
-            resize_dims = (int(W * resize), int(H * resize))
-            newW, newH = resize_dims
-            crop_h = (
-                int((1 - np.random.uniform(*self.data_config["crop_h"])) * newH) - fH
-            )
-            crop_w = int(np.random.uniform(0, max(0, newW - fW)))
-            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
-            flip = self.data_config["flip"] and np.random.choice([0, 1])
-            rotate = np.random.uniform(*self.data_config["rot"])
-        else:
-            resize = float(fW) / float(W)
-            if scale is not None:
-                resize += scale
-            else:
-                resize += self.data_config.get("resize_test", 0.0)
-            resize_dims = (int(W * resize), int(H * resize))
-            newW, newH = resize_dims
-            crop_h = int((1 - np.mean(self.data_config["crop_h"])) * newH) - fH
-            crop_w = int(max(0, newW - fW) / 2)
-            crop = (crop_w, crop_h, crop_w + fW, crop_h + fH)
-            flip = False if flip is None else flip
-            rotate = 0
-        return resize, resize_dims, crop, flip, rotate
-
-    def get_sensor_transforms(self, cam_info, cam_name):
-        w, x, y, z = cam_info["cams"][cam_name]["sensor2ego_rotation"]
-        # sweep sensor to sweep ego
-        sensor2ego_rot = torch.Tensor(Quaternion(w, x, y, z).rotation_matrix)
-        sensor2ego_tran = torch.Tensor(
-            cam_info["cams"][cam_name]["sensor2ego_translation"]
-        )
-        sensor2ego = sensor2ego_rot.new_zeros((4, 4))
-        sensor2ego[3, 3] = 1
-        sensor2ego[:3, :3] = sensor2ego_rot
-        sensor2ego[:3, -1] = sensor2ego_tran
-        # sweep ego to global
-        w, x, y, z = cam_info["cams"][cam_name]["ego2global_rotation"]
-        ego2global_rot = torch.Tensor(Quaternion(w, x, y, z).rotation_matrix)
-        ego2global_tran = torch.Tensor(
-            cam_info["cams"][cam_name]["ego2global_translation"]
-        )
-        ego2global = ego2global_rot.new_zeros((4, 4))
-        ego2global[3, 3] = 1
-        ego2global[:3, :3] = ego2global_rot
-        ego2global[:3, -1] = ego2global_tran
-        return sensor2ego, ego2global
-
-    def get_inputs(self, results, flip=None, scale=None):
-        imgs = []
-        sensor2egos = []
-        ego2globals = []
-        intrins = []
-        post_rots = []
-        post_trans = []
-        cam_names = self.choose_cams()
-        results["cam_names"] = cam_names
-        canvas = []
-        for cam_name in cam_names:
-            cam_data = results["curr"]["cams"][cam_name]
-            filename = cam_data["data_path"]
-            img = Image.open(filename)
-            post_rot = torch.eye(2)
-            post_tran = torch.zeros(2)
-
-            intrin = torch.Tensor(cam_data["cam_intrinsic"])
-
-            sensor2ego, ego2global = self.get_sensor_transforms(
-                results["curr"], cam_name
-            )
-            # image view augmentation (resize, crop, horizontal flip, rotate)
-            img_augs = self.sample_augmentation(
-                H=img.height, W=img.width, flip=flip, scale=scale
-            )
-            resize, resize_dims, crop, flip, rotate = img_augs
-            img, post_rot2, post_tran2 = self.img_transform(
-                img,
-                post_rot,
-                post_tran,
-                resize=resize,
-                resize_dims=resize_dims,
-                crop=crop,
-                flip=flip,
-                rotate=rotate,
-            )
-
-            # for convenience, make augmentation matrices 3x3
-            post_tran = torch.zeros(3)
-            post_rot = torch.eye(3)
-            post_tran[:2] = post_tran2
-            post_rot[:2, :2] = post_rot2
-
-            canvas.append(np.array(img))
-            imgs.append(self.normalize_img(img))
-
-            if self.sequential:
-                assert "adjacent" in results
-                for adj_info in results["adjacent"]:
-                    filename_adj = adj_info["cams"][cam_name]["data_path"]
-                    img_adjacent = Image.open(filename_adj)
-                    img_adjacent = self.img_transform_core(
-                        img_adjacent,
-                        resize_dims=resize_dims,
-                        crop=crop,
-                        flip=flip,
-                        rotate=rotate,
-                    )
-                    imgs.append(self.normalize_img(img_adjacent))
-            intrins.append(intrin)
-            sensor2egos.append(sensor2ego)
-            ego2globals.append(ego2global)
-            post_rots.append(post_rot)
-            post_trans.append(post_tran)
-
-        if self.sequential:
-            for adj_info in results["adjacent"]:
-                post_trans.extend(post_trans[: len(cam_names)])
-                post_rots.extend(post_rots[: len(cam_names)])
-                intrins.extend(intrins[: len(cam_names)])
-
-                # align
-                for cam_name in cam_names:
-                    sensor2ego, ego2global = self.get_sensor_transforms(
-                        adj_info, cam_name
-                    )
-                    sensor2egos.append(sensor2ego)
-                    ego2globals.append(ego2global)
-
-        imgs = torch.stack(imgs)
-
-        sensor2egos = torch.stack(sensor2egos)
-        ego2globals = torch.stack(ego2globals)
-        intrins = torch.stack(intrins)
-        post_rots = torch.stack(post_rots)
-        post_trans = torch.stack(post_trans)
-        results["canvas"] = canvas
-        return (imgs, sensor2egos, ego2globals, intrins, post_rots, post_trans)
-
-    def __call__(self, results):
-        results["img_inputs"] = self.get_inputs(results)
-        return results
-
-
-@PIPELINES.register_module()
-class LoadAnnotationsBEVDepth(object):
-    def __init__(self, bda_aug_conf, classes, is_train=True):
-        self.bda_aug_conf = bda_aug_conf
-        self.is_train = is_train
-        self.classes = classes
-
-    def sample_bda_augmentation(self):
-        """Generate bda augmentation values based on bda_config."""
-        if self.is_train:
-            rotate_bda = np.random.uniform(*self.bda_aug_conf["rot_lim"])
-            scale_bda = np.random.uniform(*self.bda_aug_conf["scale_lim"])
-            flip_dx = np.random.uniform() < self.bda_aug_conf["flip_dx_ratio"]
-            flip_dy = np.random.uniform() < self.bda_aug_conf["flip_dy_ratio"]
-        else:
-            rotate_bda = 0
-            scale_bda = 1.0
-            flip_dx = False
-            flip_dy = False
-        return rotate_bda, scale_bda, flip_dx, flip_dy
-
-    def bev_transform(self, gt_boxes, rotate_angle, scale_ratio, flip_dx, flip_dy):
-        rotate_angle = torch.tensor(rotate_angle / 180 * np.pi)
-        rot_sin = torch.sin(rotate_angle)
-        rot_cos = torch.cos(rotate_angle)
-        rot_mat = torch.Tensor(
-            [[rot_cos, -rot_sin, 0], [rot_sin, rot_cos, 0], [0, 0, 1]]
-        )
-        scale_mat = torch.Tensor(
-            [[scale_ratio, 0, 0], [0, scale_ratio, 0], [0, 0, scale_ratio]]
-        )
-        flip_mat = torch.Tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        if flip_dx:
-            flip_mat = flip_mat @ torch.Tensor([[-1, 0, 0], [0, 1, 0], [0, 0, 1]])
-        if flip_dy:
-            flip_mat = flip_mat @ torch.Tensor([[1, 0, 0], [0, -1, 0], [0, 0, 1]])
-        rot_mat = flip_mat @ (scale_mat @ rot_mat)
-        if gt_boxes.shape[0] > 0:
-            gt_boxes[:, :3] = (rot_mat @ gt_boxes[:, :3].unsqueeze(-1)).squeeze(-1)
-            gt_boxes[:, 3:6] *= scale_ratio
-            gt_boxes[:, 6] += rotate_angle
-            if flip_dx:
-                gt_boxes[:, 6] = 2 * torch.asin(torch.tensor(1.0)) - gt_boxes[:, 6]
-            if flip_dy:
-                gt_boxes[:, 6] = -gt_boxes[:, 6]
-            gt_boxes[:, 7:] = (rot_mat[:2, :2] @ gt_boxes[:, 7:].unsqueeze(-1)).squeeze(
-                -1
-            )
-        return gt_boxes, rot_mat
-
-    def __call__(self, results):
-        gt_boxes, gt_labels = results["ann_infos"]
-        gt_boxes, gt_labels = (
-            torch.tensor(np.array(gt_boxes), dtype=torch.float),
-            torch.tensor(np.array(gt_labels), dtype=torch.float),
-        )
-        rotate_bda, scale_bda, flip_dx, flip_dy = self.sample_bda_augmentation()
-        bda_mat = torch.zeros(4, 4)
-        bda_mat[3, 3] = 1
-        gt_boxes, bda_rot = self.bev_transform(
-            gt_boxes, rotate_bda, scale_bda, flip_dx, flip_dy
-        )
-        bda_mat[:3, :3] = bda_rot
-        if len(gt_boxes) == 0:
-            gt_boxes = torch.zeros(0, 9)
-        results["gt_bboxes_3d"] = LiDARInstance3DBoxes(
-            gt_boxes, box_dim=gt_boxes.shape[-1], origin=(0.5, 0.5, 0.5)
-        )
-        results["gt_labels_3d"] = gt_labels
-        imgs, rots, trans, intrins = results["img_inputs"][:4]
-        post_rots, post_trans = results["img_inputs"][4:]
-        results["img_inputs"] = (
-            imgs,
-            rots,
-            trans,
-            intrins,
-            post_rots,
-            post_trans,
-            bda_rot,
-        )
-        return results

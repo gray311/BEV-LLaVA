@@ -188,6 +188,8 @@ class SpatialCrossAttention(BaseModule):
         count = count.permute(1, 2, 0).sum(-1)
         count = torch.clamp(count, min=1.0)
         slots = slots / count[..., None]
+
+        slots = slots.type_as(value)
         slots = self.output_proj(slots)
 
         return self.dropout(slots) + inp_residual
@@ -439,7 +441,7 @@ class MSDeformableAttention3D(BaseModule):
 
         if torch.cuda.is_available() and value.is_cuda:
             if value.dtype == torch.float16:
-                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
+                MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp16
             else:
                 MultiScaleDeformableAttnFunction = MultiScaleDeformableAttnFunction_fp32
             output = MultiScaleDeformableAttnFunction.apply(

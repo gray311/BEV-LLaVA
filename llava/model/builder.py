@@ -19,11 +19,11 @@ import shutil
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 import torch
+from llava.constants import DEFAULT_X_PATCH_TOKEN, DEFAULT_X_START_TOKEN, DEFAULT_X_END_TOKEN
 from llava.model import *
-from llava.constants import DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 
-def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", **kwargs):
+def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, load_4bit=False, device_map="auto", device="cuda", driving_scene="image", **kwargs):
     kwargs = {"device_map": device_map, **kwargs}
 
     if device != "cuda":
@@ -126,26 +126,36 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 model = AutoModelForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, **kwargs)
 
-    image_processor = None
-
+    processor = {}
     if 'llava' in model_name.lower():
-        mm_use_im_start_end = getattr(model.config, "mm_use_im_start_end", False)
-        mm_use_im_patch_token = getattr(model.config, "mm_use_im_patch_token", True)
-        if mm_use_im_patch_token:
-            tokenizer.add_tokens([DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
-        if mm_use_im_start_end:
-            tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN], special_tokens=True)
+        mm_use_x_start_end = getattr(model.config, "mm_use_x_start_end", False)
+        mm_use_x_patch_token = getattr(model.config, "mm_use_x_patch_token", True)
+        if driving_scene == 'map': driving_scene = 'image' # Currently, only map input as image is supported.
+        if mm_use_x_patch_token:
+            tokenizer.add_tokens([DEFAULT_X_PATCH_TOKEN[driving_scene.upper()]], special_tokens=True)
+        if mm_use_x_start_end:
+            tokenizer.add_tokens([DEFAULT_X_START_TOKEN[driving_scene.upper()], \
+                                 DEFAULT_X_END_TOKEN[driving_scene.upper()]], special_tokens=True)
         model.resize_token_embeddings(len(tokenizer))
 
-        vision_tower = model.get_vision_tower()
-        if not vision_tower.is_loaded:
-            vision_tower.load_model()
-        vision_tower.to(device=device, dtype=torch.float16)
-        image_processor = vision_tower.image_processor
+        if driving_scene == "image":
+            vision_tower = model.get_image_tower()
+            if not vision_tower.is_loaded:
+                vision_tower.load_model()
+            vision_tower.to(device=device, dtype=torch.float16)
+            image_processor = vision_tower.image_processor
+            processor['image'] = image_processor
+
+        if driving_scene == "bev":
+            bev_tower = model.get_bev_tower()
+            if not bev_tower.is_loaded:
+                bev_tower.load_model()
+            bev_tower.to(device=device, dtype=torch.float16)
+            bev_processor = None
 
     if hasattr(model.config, "max_sequence_length"):
         context_len = model.config.max_sequence_length
     else:
         context_len = 2048
 
-    return tokenizer, model, image_processor, context_len
+    return tokenizer, model, processor, context_len

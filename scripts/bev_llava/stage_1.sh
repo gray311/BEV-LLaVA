@@ -1,21 +1,20 @@
 #!/bin/bash
 
-deepspeed --num_gpus 1 llava/train/train_mem.py \
+CUDA_VISIBLE_DEVICES=3 deepspeed --num_gpus=1 llava/train/train_mem.py \
     --deepspeed ./configs/accelerate_config/zero2.json \
     --model_name_or_path lmsys/vicuna-7b-v1.5 \
-    --version plain \
-    --data_path ./playground/data/LLaVA-Pretrain/blip_laion_cc_sbu_558k.json \
-    --image_folder ./playground/data/LLaVA-Pretrain/images \
+    --version v1 \
     --bev_tower ./llava/model/multimodal_encoder/bev_mmdet3d/configs/bevformer.py \
+    --data_config ./llava/model/multimodal_encoder/bev_mmdet3d/configs/bevformer.py \
     --mm_projector_type mlp2x_gelu \
     --tune_mm_mlp_adapter True \
     --mm_vision_select_layer -2 \
-    --mm_use_im_start_end False \
-    --mm_use_im_patch_token False \
-    --bf16 True \
-    --output_dir ./checkpoints/llava-v1.5-7b-pretrain \
+    --mm_use_x_start_end False \
+    --mm_use_x_patch_token False \
+    --fp16 True \
+    --output_dir /home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/checkpoints/bev-llava-v1.5-7b-pretrain \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 32 \
+    --per_device_train_batch_size 8 \
     --per_device_eval_batch_size 4 \
     --gradient_accumulation_steps 1 \
     --evaluation_strategy "no" \

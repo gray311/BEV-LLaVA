@@ -1,11 +1,18 @@
 from PIL import Image
 from io import BytesIO
 import base64
-
+import re
 import torch
 from transformers import StoppingCriteria
-from llava.constants import IMAGE_TOKEN_INDEX
-
+from llava.constants import (
+    IGNORE_INDEX,
+    X_TOKEN_INDEX,
+    X_INDEX_TOKEN,
+    DEFAULT_X_TOKEN,
+    DEFAULT_X_PATCH_TOKEN,
+    DEFAULT_X_START_TOKEN,
+    DEFAULT_X_END_TOKEN,
+)
 
 def load_image_from_base64(image):
     return Image.open(BytesIO(base64.b64decode(image)))
@@ -40,11 +47,18 @@ def process_images(images, image_processor, model_cfg):
     return new_images
 
 
-def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
-    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split('<image>')]
+def tokenizer_X_token(prompt, tokenizer, X_token_index, return_tensors=None):
+    regex_pattern = '(' + '|'.join([f'<{X_INDEX_TOKEN[token_index].lower()}>' for token_index in X_token_index]) + ')'
+    prompt_chunks = re.split(regex_pattern, prompt)
+    chunk_sep = []
+    for i, chunk in enumerate(prompt_chunks):
+        if chunk in regex_pattern and len(chunk) > 0:
+            chunk_sep.append(X_TOKEN_INDEX[chunk[1:-1].upper()])
+    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt_chunks \
+                     if (chunk not in regex_pattern or len(chunk) == 0)]
 
     def insert_separator(X, sep):
-        return [ele for sublist in zip(X, [sep]*len(X)) for ele in sublist][:-1]
+        return [ele for sublist in zip(X, sep) for ele in sublist][:-1]
 
     input_ids = []
     offset = 0
@@ -52,7 +66,7 @@ def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX
         offset = 1
         input_ids.append(prompt_chunks[0][0])
 
-    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+    for x in insert_separator(prompt_chunks, [[sep] * (offset + 1) for sep in chunk_sep] + [[0]]):
         input_ids.extend(x[offset:])
 
     if return_tensors is not None:
@@ -61,7 +75,6 @@ def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX
         raise ValueError(f'Unsupported tensor type: {return_tensors}')
     return input_ids
 
-
 def get_model_name_from_path(model_path):
     model_path = model_path.strip("/")
     model_paths = model_path.split("/")
@@ -69,6 +82,9 @@ def get_model_name_from_path(model_path):
         return model_paths[-2] + "_" + model_paths[-1]
     else:
         return model_paths[-1]
+
+
+
 
 class KeywordsStoppingCriteria(StoppingCriteria):
     def __init__(self, keywords, tokenizer, input_ids):
@@ -84,8 +100,9 @@ class KeywordsStoppingCriteria(StoppingCriteria):
             self.keyword_ids.append(torch.tensor(cur_keyword_ids))
         self.tokenizer = tokenizer
         self.start_len = input_ids.shape[1]
-    
-    def call_for_batch(self, output_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+
+    def __call__(self, output_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
+        assert output_ids.shape[0] == 1, "Only support batch size 1 (yet)"  # TODO
         offset = min(output_ids.shape[1] - self.start_len, self.max_keyword_len)
         self.keyword_ids = [keyword_id.to(output_ids.device) for keyword_id in self.keyword_ids]
         for keyword_id in self.keyword_ids:
@@ -96,9 +113,3 @@ class KeywordsStoppingCriteria(StoppingCriteria):
             if keyword in outputs:
                 return True
         return False
-    
-    def __call__(self, output_ids: torch.LongTensor, scores: torch.FloatTensor, **kwargs) -> bool:
-        outputs = []
-        for i in range(output_ids.shape[0]):
-            outputs.append(self.call_for_batch(output_ids[i].unsqueeze(0), scores))
-        return all(outputs)

@@ -147,3 +147,135 @@ model = dict(
 )
 
 
+##### data config
+
+dataset_type = 'CustomNuScenesDatasetV2'
+data_root = '/home/scratch.chaoweix_nvresearch/av/AV-GPT/data/nuscenes/'
+nuscenes_qa_file = "/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/nuscenes-qa/"
+
+
+ida_aug_conf = {
+    "reisze": [512, 544, 576, 608, 640, 672, 704, 736, 768],  #  (0.8, 1.2)
+    "crop": (0, 260, 1600, 900),
+    "H": 900,
+    "W": 1600,
+    "rand_flip": True,
+}
+ida_aug_conf_eval = {
+    "reisze": [640, ],
+    "crop": (0, 260, 1600, 900),
+    "H": 900,
+    "W": 1600,
+    "rand_flip": False,
+}
+
+
+from bev_mmdet3d.datasets.pipelines import (
+    LoadMultiViewImageFromFiles,
+    LoadAnnotations3D,
+    ObjectRangeFilter,
+    ObjectNameFilter,
+    MultiScaleFlipAug3D,
+    CropResizeFlipImage,
+    NormalizeMultiviewImage,
+    PadMultiViewImage,
+    DefaultFormatBundle3D,
+    CustomCollect3D,
+    PhotoMetricDistortionMultiViewImage,
+    GlobalRotScaleTransImage,
+)
+
+train_pipeline = [
+    dict(type=LoadMultiViewImageFromFiles, to_float32=True),
+    dict(type=PhotoMetricDistortionMultiViewImage),
+    dict(type=LoadAnnotations3D, with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
+    dict(type=GlobalRotScaleTransImage,
+        rot_range=[-22.5, 22.5],
+        scale_ratio_range=[0.95, 1.05],
+        translation_std=[0, 0, 0],
+        reverse_angle=True,
+        training=True,
+        flip_dx_ratio=0.5,
+        flip_dy_ratio=0.5,
+        only_gt=True,),
+    dict(
+        type=ObjectRangeFilter,
+        point_cloud_range=point_cloud_range),
+    dict(
+        type=ObjectNameFilter,
+        classes=class_names),
+    dict(type=CropResizeFlipImage, data_aug_conf=ida_aug_conf, training=True, debug=False),
+    dict(type=NormalizeMultiviewImage, **img_norm_cfg),
+    dict(type=PadMultiViewImage, size_divisor=32),
+    dict(type=DefaultFormatBundle3D, class_names=class_names),
+    dict(
+        type=CustomCollect3D,
+        keys=['gt_bboxes_3d', 'gt_labels_3d', 'img',
+              'ego2global_translation', 'ego2global_rotation', 'lidar2ego_translation', 'lidar2ego_rotation',
+              'timestamp', 'mono_input_dict', 'mono_ann_idx', 'aug_param']),
+]
+eval_pipeline = [
+    dict(type=LoadMultiViewImageFromFiles, to_float32=True, ),
+    dict(type=CropResizeFlipImage, data_aug_conf=ida_aug_conf_eval, training=False, debug=False),
+    dict(type=NormalizeMultiviewImage, **img_norm_cfg),
+    dict(type=PadMultiViewImage, size_divisor=32),
+    dict(
+        type=MultiScaleFlipAug3D,
+        img_scale=(1600, 640),
+        pts_scale_ratio=1,
+        flip=False,
+        transforms=[
+            dict(
+                type=DefaultFormatBundle3D,
+                class_names=class_names,
+                with_label=False),
+            dict(type=CustomCollect3D,
+                 keys=['img', 'ego2global_translation', 'ego2global_rotation', 'lidar2ego_translation',
+                       'lidar2ego_rotation', 'timestamp'])
+        ])
+]
+
+data = dict(
+    samples_per_gpu=1,
+    workers_per_gpu=4,
+    persistent_workers=True,
+    train=dict(
+        type='CustomNuScenesDatasetV2',
+        frames=frames,
+        data_root=data_root,
+        ann_file=data_root + 'nuscenes_infos_temporal_train.pkl',
+        nuscenes_qa_file=nuscenes_qa_file + "NuScenes_train_questions.json",
+        pipeline=train_pipeline,
+        classes=class_names,
+        modality=input_modality,
+        test_mode=False,
+        use_valid_flag=True,
+        box_type_3d='LiDAR',
+        mono_cfg=dict(
+            name='nusc_trainval',
+            data_root=data_root,
+            min_num_lidar_points=3,
+            min_box_visibility=0.2)),
+    val=dict(
+        type='CustomNuScenesDatasetV2',
+        frames=frames,
+        data_root=data_root,
+        ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+        nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+        pipeline=eval_pipeline,
+        classes=class_names,
+        modality=input_modality,
+        samples_per_gpu=1),
+    test=dict(
+        type='CustomNuScenesDatasetV2',
+        frames=frames,
+        data_root=data_root,
+        ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
+        nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+        pipeline=eval_pipeline,
+        classes=class_names,
+        modality=input_modality),
+    shuffler_sampler=dict(type='DistributedGroupSampler'),
+    nonshuffler_sampler=dict(type='DistributedSampler'))
+evaluation = dict(interval=4, pipeline=eval_pipeline)
+

@@ -66,8 +66,8 @@ class BEVFormerV2(nn.Module):
         if img_backbone:
             self.img_backbone = builder.build_vision_encoder(img_backbone)
         if img_neck is not None:
+            self.with_img_neck = True
             self.img_neck = builder.build_neck(img_neck)
-
 
         # levels of features
         self.num_levels = num_levels
@@ -108,16 +108,8 @@ class BEVFormerV2(nn.Module):
             img_feats = [torch.flip(x, dims=[-1, ]) for x in img_feats]
         return img_feats
 
-
-    def forward_pts(self,
-                    pts_feats,
-                    gt_bboxes_3d,
-                    gt_labels_3d,
-                    img_metas,
-                    gt_bboxes_ignore=None,
-                    prev_bev=None):
-
-        return self.pts_bbox_head(pts_feats, img_metas, prev_bev)
+    def forward_pts(self, pts_feats, img_metas, prev_bev=None):
+        return self.pts_bbox_head(pts_feats, img_metas, prev_bev, only_bev=True)
 
     def obtain_history_bev(self, img_dict, img_metas_dict):
         """Obtain history BEV features iteratively. To save GPU memory, gradients are not calculated.
@@ -140,36 +132,28 @@ class BEVFormerV2(nn.Module):
             self.train()
         return list(prev_bev.values())
 
-    def forward(self,
-                points=None,
-                img_metas=None,
-                gt_bboxes_3d=None,
-                gt_labels_3d=None,
-                img=None,
-                gt_bboxes_ignore=None,
-                **mono_input_dict,
-            ):
+    def forward(self, img_metas=None, img=None,):
+        img_meta = OrderedDict(sorted(img_metas[0].items()))
+        img_dict = {}
 
-            img_metas = OrderedDict(sorted(img_metas[0].items()))
-            img_dict = {}
-            for ind, t in enumerate(img_metas.keys()):
-                img_dict[t] = img[:, ind, ...]
+        for ind, t in enumerate(img_meta.keys()):
+            img_dict[t] = img[:, ind, ...]
 
-            img = img_dict[0]
-            img_dict.pop(0)
+        img = img_dict[0]
+        img_dict.pop(0)
 
-            prev_img_metas = copy.deepcopy(img_metas)
-            prev_img_metas.pop(0)
-            prev_bev = self.obtain_history_bev(img_dict, prev_img_metas)
+        prev_img_metas = copy.deepcopy(img_meta)
+        prev_img_metas.pop(0)
+        prev_bev = self.obtain_history_bev(img_dict, prev_img_metas)
 
-            img_metas = [img_metas[0], ]
+        for item in prev_bev:
+            if item is not None:
+                print(item.shape)
 
-            img_feats = self.extract_feat(img=img, img_metas=img_metas)
-            outputs = self.forward_pts(img_feats if self.num_levels is None
-                                             else img_feats[:self.num_levels], gt_bboxes_3d,
-                                             gt_labels_3d, img_metas,
-                                             gt_bboxes_ignore, prev_bev)
-            return outputs
+        img_feats = self.extract_feat(img=img, img_metas=img_metas)
+        outputs = self.forward_pts(img_feats if self.num_levels is None else img_feats[:self.num_levels],
+                                         img_metas=img_metas, prev_bev=prev_bev)
+        return outputs
 
 
 
