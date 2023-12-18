@@ -32,3 +32,27 @@ mim install "mmdet3d>=1.1.0rc0"
 pip install -e ".[train]"
 pip install flash-attn --no-build-isolation
 ```
+## Inference
+
+1. Inference for map image
+```
+python inference4img.py
+```
+
+2. Inference for bev image
+```
+python inference4bev.py
+```
+
+## Training
+
+1. Training for bev image
+```
+bash scripts/bev_llava/stage_1.sh
+```
+
+2. Training for map image
+```
+in progress
+```
+
