@@ -2,7 +2,8 @@ import os
 import torch
 
 from torch.utils.data import Sampler
-
+from torch.utils.data import DataLoader, Dataset, RandomSampler, SequentialSampler
+from packaging import version
 from transformers import Trainer
 from transformers.trainer import (
     is_sagemaker_mp_enabled,
@@ -13,6 +14,8 @@ from transformers.trainer import (
     logger,
 )
 from typing import List, Optional
+
+
 
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -147,6 +150,7 @@ class LLaVATrainer(Trainer):
         else:
             return super()._get_train_sampler()
 
+
     def create_optimizer(self):
         """
         Setup the optimizer.
@@ -212,6 +216,8 @@ class LLaVATrainer(Trainer):
 
             optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args)
 
+            logger.info(f"updated parameters:{optimizer_grouped_parameters}")
+
             if self.sharded_ddp == ShardedDDPOption.SIMPLE:
                 self.optimizer = OSS(
                     params=optimizer_grouped_parameters,
@@ -245,7 +251,7 @@ class LLaVATrainer(Trainer):
             output_dir = os.path.join(run_dir, checkpoint_folder)
 
             # Only save Adapter
-            keys_to_match = ['mm_projector', 'vision_resampler']
+            keys_to_match = ['mm_projector', 'vision_resampler', 'bev_tower']
             if getattr(self.args, "use_im_start_end", False):
                 keys_to_match.extend(['embed_tokens', 'embed_in'])
 

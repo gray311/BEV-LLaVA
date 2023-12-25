@@ -29,11 +29,9 @@ class ReduceBEVFeatures(nn.Module):
     def __init__(self):
         super(ReduceBEVFeatures, self).__init__()
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, stride=4, padding=4),
+            nn.Conv2d(256, 512, kernel_size=3, stride=3),
             nn.ReLU(),
-            nn.Conv2d(512, 1024, kernel_size=3, stride=2, padding=4),
-            nn.ReLU(),
-            nn.Conv2d(1024, 1024, kernel_size=3, stride=2, padding=2),
+            nn.Conv2d(512, 1024, kernel_size=3, stride=3),
             nn.ReLU(),
         )
 
@@ -71,10 +69,10 @@ class BEVVisionTower(nn.Module):
         bs, _, dim = image_forward_outs.shape
         image_forward_outs= image_forward_outs.reshape(bs, self.bev_h, self.bev_w, dim)
         if self.aggregation_ops == "avg_pooling":
-            pool_size, stride = 7, 7
+            pool_size, stride = 5, 5
             aggregated_bev_features = F.avg_pool2d(image_forward_outs.permute(0, 3, 1, 2), pool_size, stride).permute(0, 2, 3, 1)
         elif self.aggregation_ops == "max_pooling":
-            pool_size, stride = 7, 7
+            pool_size, stride = 5, 5
             aggregated_bev_features = F.max_pool2d(image_forward_outs.permute(0, 3, 1, 2), pool_size, stride).permute(0, 2, 3, 1)
         elif self.aggregation_ops == "convolution":
             print(self.fusion_module)
@@ -117,45 +115,47 @@ class BEVVisionTower(nn.Module):
     # def num_patches(self):
     #     return self._num_patches_
 
-# from dataclasses import dataclass, field
-# from typing import Dict, Optional, Sequence, List
-#
-#
-# def collate(instances):
-#     batch = dict()
-#     if 'img' in instances[0] and 'img_metas' in instances[0]:
-#         bev_imgs = [instance['img'] for instance in instances]
-#         if all(x is not None and x.shape == bev_imgs[0].shape for x in bev_imgs):
-#             batch['img'] = torch.stack(bev_imgs)
-#         else:
-#             batch['img'] = bev_imgs
-#         batch['img_metas'] = [instance['img_metas'] for instance in instances]
-#
-#     return batch
-#
-#
-# if __name__ == "__main__":
-#     vision_tower = "/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/configs/bevformer.py"
-#     # image_tower = BEVVisionTower(vision_tower)
-#     # image_tower.cuda()
-#     cfg = Config.fromfile(vision_tower)
-#     dataset = custom_build_dataset(cfg.data.test)
-#     print(len(dataset))
-#
-#     train_dataloader = DataLoader(
-#         dataset,
-#         batch_size=4,
-#         num_workers=4,
-#         # sampler=DistributedSampler(dataset, shuffle=True, drop_last=True),
-#         shuffle=False,
-#         collate_fn=collate,
-#     )
-#
-#     from tqdm import tqdm
-#     cnt = 0
-#     for batch in tqdm(train_dataloader):
-#         cnt += 1
+from dataclasses import dataclass, field
+from typing import Dict, Optional, Sequence, List
 
+
+def collate(instances):
+    batch = dict()
+
+    batch['instruction'] = [instance['instruction'] for instance in instances]
+
+    if 'img' in instances[0] and 'img_metas' in instances[0]:
+        bev_imgs = [instance['img'] for instance in instances]
+        if all(x is not None and x.shape == bev_imgs[0].shape for x in bev_imgs):
+            batch['img'] = torch.stack(bev_imgs)
+        else:
+            batch['img'] = bev_imgs
+        batch['img_metas'] = [instance['img_metas'] for instance in instances]
+
+    return batch
+
+
+if __name__ == "__main__":
+    vision_tower = "/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/configs/bevformer.py"
+    # image_tower = BEVVisionTower(vision_tower)
+    # image_tower.cuda()
+    cfg = Config.fromfile(vision_tower)
+    dataset = custom_build_dataset(cfg.data.train)
+    print(len(dataset))
+
+    train_dataloader = DataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=4,
+        # sampler=DistributedSampler(dataset, shuffle=True, drop_last=True),
+        shuffle=False,
+        collate_fn=collate,
+    )
+
+    from tqdm import tqdm
+    cnt = 0
+    for batch in tqdm(train_dataloader):
+        cnt += 1
 
 
     # from tqdm import tqdm

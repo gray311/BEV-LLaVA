@@ -642,7 +642,6 @@ def preprocess(
 from llava.model.multimodal_encoder.bev_mmdet3d.datasets import (
     custom_build_dataset,
     CustomNuScenesDataset,
-    custom_build_dataset
 )
 from mmengine import Config
 
@@ -655,7 +654,7 @@ class LazySupervisedDataset(Dataset):
         # list_data_dict = json.load(open(data_path, "r"))
 
         cfg = Config.fromfile(data_args.data_config)
-        if data_args.test_mode != False:
+        if data_args.test_mode == False:
             self.list_data_dict = custom_build_dataset(cfg.data.train)
         else:
             self.list_data_dict = custom_build_dataset(cfg.data.test)
@@ -671,7 +670,7 @@ class LazySupervisedDataset(Dataset):
     def lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            img_tokens = 128 if 'image' in sample else 0
+            img_tokens = 128 if any([x.lower() in sample for x in DEFAULT_X_TOKEN.keys()]) else 0
             length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
         return length_list
 
@@ -680,19 +679,20 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
-            cur_len = cur_len if 'image' in sample else -cur_len
+            cur_len = cur_len if any([x.lower() in sample for x in DEFAULT_X_TOKEN.keys()]) else -cur_len
             length_list.append(cur_len)
         return length_list
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
         sources = self.list_data_dict[i]
         if isinstance(i, int):
+            sample = sources
             sources = [sources]
         for idx in range(len(sources)):
             sources[idx]['conversations'] = [
                 {
                     "from": "human",
-                    "value": sources[idx]['instruction'] + "\n" + sources[idx]['question']
+                    "value": sources[idx]['instruction'] + "\n" + sources[idx]['question'] + "\nAnswer the question using a single word or phrase."
                 },
                 {
                     "from": "gpt",
@@ -730,9 +730,9 @@ class LazySupervisedDataset(Dataset):
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
 
-        if 'image' not in self.list_data_dict[i].keys() and \
-            'img_metas' not in self.list_data_dict[i].keys() and \
-            'img' not in self.list_data_dict[i].keys():
+        if 'image' not in sample.keys() and \
+            'img_metas' not in sample.keys() and \
+            'img' not in sample.keys():
             sources = copy.deepcopy([e["conversations"] for e in sources])
 
         data_dict = preprocess(sources, self.tokenizer,
@@ -744,17 +744,18 @@ class LazySupervisedDataset(Dataset):
             data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
 
         # image exist in the data
-        if 'image' in self.list_data_dict[i]:
+        if 'image' in sample:
             data_dict['image'] = image
 
-        if 'img_metas' in self.list_data_dict[i] and 'img' in self.list_data_dict[i]:
-            data_dict['img_metas'] = self.list_data_dict[i]['img_metas']
-            data_dict['img'] = self.list_data_dict[i]['img']
+        if 'img_metas' in sample and 'img' in sample:
+            data_dict['img_metas'] = sample['img_metas']
+            data_dict['img'] = sample['img']
 
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
             data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+
         return data_dict
 
 
@@ -812,6 +813,7 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, dat
     train_dataset = LazySupervisedDataset(tokenizer=tokenizer,
                                 data_path=data_args.data_path,
                                 data_args=data_args)
+
     data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
     return dict(train_dataset=train_dataset,
                 eval_dataset=None,
@@ -826,7 +828,6 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
-
 
     bnb_model_from_pretrained_args = {}
     if training_args.bits in [4, 8]:
@@ -990,12 +991,11 @@ def train():
         model.config.mm_use_x_patch_token = model_args.mm_use_x_patch_token
         model.initialize_X_tokenizer(model_args, tokenizer=tokenizer)
 
-    for n, p in model.named_parameters():
-        if p.requires_grad:
-            print(n, p.shape)
-
-    print(model)
-
+        for n, p in model.named_parameters():
+            if p.requires_grad == False and \
+                    ('bev_tower' in n or 'lm_head' in n or 'embed_tokens' in n):
+                p.requires_grad = True
+               
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
         for name, module in model.named_modules():
@@ -1011,11 +1011,13 @@ def train():
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
 
-    # print(data_module['train_dataset'][0])
+    # from accelerate import Accelerator
+    #
+    # accelerator = Accelerator()
     #
     # train_dataloader = DataLoader(
     #     data_module['train_dataset'],
-    #     batch_size=4,
+    #     batch_size=1,
     #     num_workers=4,
     #     # sampler=DistributedSampler(dataset, shuffle=True, drop_last=True),
     #     shuffle=False,
@@ -1030,10 +1032,11 @@ def train():
     # cnt = 0
     # from tqdm import tqdm
     # for batch in tqdm(train_dataloader):
-    #     print(batch.keys())
-    #     outputs = model(**batch)
-    #     print(outputs.loss)
-    #     break
+    #    cnt += 1
+    #
+    # import sys
+    #
+    # sys.exit(0)
 
     #
     # model.cuda().half()

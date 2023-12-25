@@ -31,9 +31,11 @@ class CustomNuScenesDataset(NuScenesDataset):
     This datset only add camera intrinsics and extrinsics to the results.
     """
 
-    def __init__(self, queue_length=4, bev_size=(200, 200), overlap_test=False, nuscenes_qa_file=None, *args, **kwargs):
+    def __init__(self, queue_length=4, bev_size=(200, 200), overlap_test=False, nuscenes_qa_file=None, dataset_length=None, *args, **kwargs):
         if nuscenes_qa_file is not None:
             self.nuscenes_qa = json.load(open(nuscenes_qa_file, "r"))['questions']
+            if dataset_length is not None:
+                self.nuscenes_qa = self.nuscenes_qa[:dataset_length]
         super().__init__(*args, **kwargs)
         self.queue_length = queue_length
         self.overlap_test = overlap_test
@@ -46,7 +48,7 @@ class CustomNuScenesDataset(NuScenesDataset):
     def __len__(self):
         return len(self.nuscenes_qa)
 
-    def prepare_train_data(self, index):
+    def prepare_train_data(self, idx):
         """
         Training data preparation.
         Args:
@@ -54,6 +56,10 @@ class CustomNuScenesDataset(NuScenesDataset):
         Returns:
             dict: Training data dict of the corresponding index.
         """
+        sample = self.nuscenes_qa[idx]
+        sample['instruction'] = random.sample(nuscenes_qa_instructions, 1)[0]
+        index = self.token2index[sample['sample_token']]
+
         queue = []
         index_list = list(range(index-self.queue_length, index))
         random.shuffle(index_list)
@@ -66,13 +72,13 @@ class CustomNuScenesDataset(NuScenesDataset):
                 return None
             self.pre_pipeline(input_dict)
             example = self.pipeline(input_dict)
-            example = {key: value[0] for key, value in example.items()}
+            # example = {key: value[0] for key, value in example.items()}
             queue.append(example)
 
-        return self.union2one(queue)
+        return self.union2one(queue, **sample)
 
 
-    def union2one(self, queue):
+    def union2one(self, queue, **kwargs):
         imgs_list = [each['img'].data for each in queue]
         metas_map = {}
         prev_scene_token = None
@@ -97,6 +103,12 @@ class CustomNuScenesDataset(NuScenesDataset):
                 prev_angle = copy.deepcopy(tmp_angle)
         queue[-1]['img'] = torch.stack(imgs_list)
         queue[-1]['img_metas'] = metas_map
+        queue[-1].update(
+            instruction=kwargs['instruction'],
+            question=kwargs['question'],
+            answer=kwargs['answer'],
+
+        )
         queue = queue[-1]
         return queue
 
@@ -189,25 +201,11 @@ class CustomNuScenesDataset(NuScenesDataset):
             dict: Data dictionary of the corresponding index.
         """
         if self.test_mode:
-            sample = self.nuscenes_qa[idx]
-            sample['instruction'] = nuscenes_qa_instructions[-1]
-            if sample['sample_token'] not in self.token2infos.keys():
-                infos = self.prepare_test_data(self.token2index[sample['sample_token']])
-                self.token2infos[sample['sample_token']]  = infos
-            else:
-                infos = self.token2infos[sample['sample_token']]
-            sample.update(infos)
+            sample = self.prepare_test_data(idx)
             return sample
         while True:
-            sample = self.nuscenes_qa[idx]
-            sample['instruction'] = random.sample(nuscenes_qa_instructions, 1)[0]
-            if sample['sample_token'] not in self.token2infos.keys():
-                infos = self.prepare_train_data(self.token2index[sample['sample_token']])
-                self.token2infos[sample['sample_token']] = infos
-            else:
-                infos = self.token2infos[sample['sample_token']]
-            if infos is None:
+            sample = self.prepare_train_data(idx)
+            if sample is None:
                 idx = self._rand_another(idx)
                 continue
-            sample.update(infos)
             return sample
