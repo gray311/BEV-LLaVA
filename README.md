@@ -69,6 +69,7 @@ workspace
 
 1. download bevformer weights  (BEVFormer-base 24ep R101-DCN), you can also download the weights from [its repo](https://github.com/fundamentalvision/BEVFormer?tab=readme-ov-file).
 ```
+cd BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/ckpts/
 wget https://objects.githubusercontent.com/github-production-release-asset-2e65be/501548489/d90e1b1f-0b3c-41a8-beec-21c24941adb1?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAVCODYLSA53PQK4ZA%2F20240101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20240101T144406Z&X-Amz-Expires=300&X-Amz-Signature=ac985a26b5e4f21db33c09d373b8bfc6c71e54b36dc08e3ece4416af1ee98233&X-Amz-SignedHeaders=host&actor_id=64787301&key_id=0&repo_id=501548489&response-content-disposition=attachment%3B%20filename%3Dbevformer_r101_dcn_24ep.pth&response-content-type=application%2Foctet-stream
 ```
 
