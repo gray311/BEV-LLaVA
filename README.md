@@ -76,7 +76,7 @@ wget https://objects.githubusercontent.com/github-production-release-asset-2e65b
 2. download llava weights:
 ```
 cd BEV-LLaVA/workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/
-[mm_projection weights](https://github.com/gray311/BEV-LLaVA/tree/main/workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5).
+down load mm_projection weights: https://github.com/gray311/BEV-LLaVA/tree/main/workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin.
 ```
 
 ## Inference
