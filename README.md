@@ -34,6 +34,35 @@ pip install flash-attn --no-build-isolation
 ```
 
 ## Data Preparation
+1. prepare Nuscene Dataset: Please refer to [this process](https://github.com/fundamentalvision/BEVFormer/blob/master/docs/prepare_dataset.md)
+
+
+2. download the DriveLM dataset:
+```
+(1) v1_0_train_nus_refined.json (380k QA pairs): gdown --id 1HO0xVRu8awfSha_TgSeRnc2c589AjtUd
+(2) v1_0_train_nus_filtered.json (70k QA pairs): gdown --id 1KtCHbf3MV7WUR08AjWzw1DuM8A4xnPqk
+(3) v1_0_train_nus_mini.json (18k QA pairs): gdown --id 1Isc41fp9b0T0rtXKBXhjeYxoma6lPbMm
+```
+
+
+**Folder structure**
+```
+workspace
+├── data/
+|   |── drivelm/
+|   |   |── v1_0_train_nus_refined.json
+|   |   |── v1_0_train_nus_filtered.json
+|   |   |── v1_0_train_nus_mini.json
+│   ├── can_bus/
+│   ├── nuscenes/
+│   │   ├── maps/
+│   │   ├── samples/
+│   │   ├── sweeps/
+│   │   ├── v1.0-test/
+|   |   ├── v1.0-trainval/
+|   |   ├── nuscenes_infos_temporal_train.pkl
+|   |   ├── nuscenes_infos_temporal_val.pkl
+```
 
 
 ## Inference
