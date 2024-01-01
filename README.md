@@ -45,7 +45,6 @@ pip install gdown
 (3) v1_0_train_nus_mini.json (18k QA pairs): gdown --id 1Isc41fp9b0T0rtXKBXhjeYxoma6lPbMm
 ```
 
-
 **Folder structure**
 ```
 workspace
@@ -65,6 +64,17 @@ workspace
 |   |   ├── nuscenes_infos_temporal_val.pkl
 ```
 
+3. update config file:
+```
+cd BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/configs
+vim bevformer.py
+change the data_path:
+  data_root = '/home/scratch.chaoweix_nvresearch/av/AV-GPT/data/nuscenes/'
+  nuscenes_qa_file = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/nuscenes-qa/'
+  drivelm_qa_file = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/drivelm/'
+```
+
+
 ## Model Weigths
 
 1. download bevformer weights  (BEVFormer-base 24ep R101-DCN), you can also download the weights from [its repo](https://github.com/fundamentalvision/BEVFormer?tab=readme-ov-file).
@@ -77,6 +87,14 @@ wget https://objects.githubusercontent.com/github-production-release-asset-2e65b
 ```
 cd BEV-LLaVA/workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/
 down load mm_projection weights: https://github.com/gray311/BEV-LLaVA/tree/main/workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin.
+```
+
+3. update config file:
+```
+cd BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/configs
+vim bevformer.py
+change the model_path:
+  load_ckpt = "/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/llava/model/multimodal_encoder/bev_mmdet3d/ckpts/bevformer_r101_dcn_24ep.pth"
 ```
 
 ## Inference
