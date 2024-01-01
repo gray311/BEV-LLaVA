@@ -39,6 +39,7 @@ pip install flash-attn --no-build-isolation
 
 2. download the DriveLM dataset:
 ```
+pip install gdown
 (1) v1_0_train_nus_refined.json (380k QA pairs): gdown --id 1HO0xVRu8awfSha_TgSeRnc2c589AjtUd
 (2) v1_0_train_nus_filtered.json (70k QA pairs): gdown --id 1KtCHbf3MV7WUR08AjWzw1DuM8A4xnPqk
 (3) v1_0_train_nus_mini.json (18k QA pairs): gdown --id 1Isc41fp9b0T0rtXKBXhjeYxoma6lPbMm
