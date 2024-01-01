@@ -96,6 +96,7 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         logits = self.lm_head(hidden_states)
 
         loss = None
+        z_loss_weight = 2e-4
         if labels is not None:
             # Shift so that tokens < n predict n
             shift_logits = logits[..., :-1, :].contiguous()
@@ -104,9 +105,11 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
             loss_fct = CrossEntropyLoss()
             shift_logits = shift_logits.view(-1, self.config.vocab_size)
             shift_labels = shift_labels.view(-1)
+            softmax_normalizer = shift_logits.max(-1).values ** 2
+            z_loss = z_loss_weight * softmax_normalizer.mean()
             # Enable model/pipeline parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            loss = loss_fct(shift_logits, shift_labels) + z_loss
 
         if not return_dict:
             output = (logits,) + outputs[1:]

@@ -1,0 +1,39 @@
+#!/bin/bash
+
+DISABLE_ADDMM_CUDA_LT=1 CUDA_VISIBLE_DEVICES=0,1,2,3 deepspeed --num_gpus=4 llava/train/train_mem.py \
+    --deepspeed ./configs/accelerate_config/zero2.json \
+    --model_name_or_path lmsys/vicuna-7b-v1.5 \
+    --version v1 \
+    --data_path ./workspace/data/cc_sbu_align/inst_cap.json  \
+    --image_folder ./workspace/data/cc_sbu_align/image \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --bev_tower ./llava/model/multimodal_encoder/bev_mmdet3d/configs/bevformer.py \
+    --pretrain_mm_mlp_adapter ./workspace/checkpoints/llava-v1.5-mlp2x-336px-pretrain-vicuna-7b-v1.5/mm_projector.bin \
+    --mm_projector_type mlp2x_gelu \
+    --tune_mm_mlp_adapter True \
+    --mm_vision_select_layer -2 \
+    --mm_use_x_start_end False \
+    --mm_use_x_patch_token False \
+    --fp16 True \
+    --output_dir /home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/checkpoints/img-vicuna-v1.0-7b-pretrain \
+    --num_train_epochs 5 \
+    --per_device_train_batch_size 32 \
+    --per_device_eval_batch_size 4 \
+    --gradient_accumulation_steps 1 \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps 300 \
+    --save_total_limit 1 \
+    --learning_rate 1e-4 \
+    --mm_projector_lr 2e-5 \
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --tf32 True \
+    --model_max_length 2048 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 4 \
+    --dataloader_pin_memory True \
+    --lazy_preprocess True \
+    --report_to wandb

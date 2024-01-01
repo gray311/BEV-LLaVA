@@ -8,13 +8,14 @@ from PIL import Image
 
 def main():
     disable_torch_init()
-    image = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/nuscenes/maps/1.png'
-    instruction = 'This is a map of the city lanes, the red dots are my location, please describe my location based on the map.'
-    model_path = 'liuhaotian/llava-v1.5-7b'
+    image = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/images/driving_1.jpg'
+    instruction = 'What are the important objects in the current scene? Those objects will be considered for the future reasoning and driving decision.'
+    model_path = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/checkpoints/img-vicuna-v1.0-7b-pretrain'
+    model_base = 'lmsys/vicuna-7b-v1.5'
     device = 'cuda'
-    load_4bit, load_8bit = True, False
+    load_4bit, load_8bit = False, False
     model_name = get_model_name_from_path(model_path)
-    tokenizer, model, processor, context_len = load_pretrained_model(model_path, None, model_name, load_8bit, load_4bit, device=device, driving_scene="map")
+    tokenizer, model, processor, context_len = load_pretrained_model(model_path, model_base, "llava", load_8bit, load_4bit, device=device, driving_scene="map")
     image_processor = processor['image']
     conv_mode = "llava_v1"
     conv = conv_templates[conv_mode].copy()

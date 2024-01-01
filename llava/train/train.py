@@ -25,6 +25,7 @@ from typing import Dict, Optional, Sequence, List
 import torch
 
 import transformers
+from accelerate.utils import set_seed
 
 from llava.constants import (
     IGNORE_INDEX,
@@ -186,13 +187,12 @@ def find_all_linear_names(model):
     return list(lora_module_names)
 
 
-def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
-                                   output_dir: str):
+def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
     """Collects the state dict and dump to disk."""
 
     if getattr(trainer.args, "tune_mm_mlp_adapter", False):
         # Only save Adapter
-        keys_to_match = ['mm_projector']
+        keys_to_match = ['mm_projector', 'vision_resampler', 'bev_tower']
         if getattr(trainer.args, "use_im_start_end", False):
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
@@ -591,7 +591,7 @@ def preprocess_plain(
 def preprocess(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
-    has_map: bool = False,
+    has_img: bool = False,
     has_bev: bool = False
 ) -> Dict:
     """
@@ -602,7 +602,7 @@ def preprocess(
     4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
     """
     driving_scenes = []
-    if has_map: driving_scenes.append(DEFAULT_X_TOKEN['MAP'])
+    if has_img: driving_scenes.append(DEFAULT_X_TOKEN['IMAGE'])
     if has_bev: driving_scenes.append(DEFAULT_X_TOKEN['BEV'])
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.PLAIN:
         return preprocess_plain(sources, tokenizer, driving_scenes)
@@ -652,12 +652,15 @@ class LazySupervisedDataset(Dataset):
         super(LazySupervisedDataset, self).__init__()
 
         # list_data_dict = json.load(open(data_path, "r"))
-
-        cfg = Config.fromfile(data_args.data_config)
-        if data_args.test_mode == False:
-            self.list_data_dict = custom_build_dataset(cfg.data.train)
+        if data_args.data_config is not None:
+            cfg = Config.fromfile(data_args.data_config)
+            if data_args.test_mode == False:
+                self.list_data_dict = custom_build_dataset(cfg.data.train)
+            else:
+                self.list_data_dict = custom_build_dataset(cfg.data.test)
         else:
-            self.list_data_dict = custom_build_dataset(cfg.data.test)
+            self.list_data_dict = json.load(open(data_path, "r"))
+
         rank0_print("Formatting inputs...Skip in lazy mode")
 
         self.tokenizer = tokenizer
@@ -689,20 +692,21 @@ class LazySupervisedDataset(Dataset):
             sample = sources
             sources = [sources]
         for idx in range(len(sources)):
-            sources[idx]['conversations'] = [
-                {
-                    "from": "human",
-                    "value": sources[idx]['instruction'] + "\n" + sources[idx]['question'] + "\nAnswer the question using a single word or phrase."
-                },
-                {
-                    "from": "gpt",
-                    "value": sources[idx]['answer']
-                },
+            if 'conversations' not in sources[idx].keys():
+                sources[idx]['conversations'] = [
+                    {
+                        "from": "human",
+                        "value": sources[idx]['instruction'].format(question=sources[idx]['question'])
+                    },
+                    {
+                        "from": "gpt",
+                        "value": sources[idx]['answer']
+                    },
 
-            ]
+                ]
 
-        if 'image' in sources[0].keys():
-            image_file = sources['image']
+        if 'image' in sample.keys():
+            image_file = sources[0]['image']
             image_folder = self.data_args.image_folder
             processor = self.data_args.image_processor
             image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
@@ -725,7 +729,7 @@ class LazySupervisedDataset(Dataset):
                 image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
             sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
 
-        if 'img_metas' in sources[0].keys() and 'img' in sources[0].keys():
+        if 'img_metas' in sample.keys() and 'img' in sample.keys():
             sources = preprocess_multimodal(
                 copy.deepcopy([e["conversations"] for e in sources]),
                 self.data_args)
@@ -736,8 +740,8 @@ class LazySupervisedDataset(Dataset):
             sources = copy.deepcopy([e["conversations"] for e in sources])
 
         data_dict = preprocess(sources, self.tokenizer,
-                               has_map=('image' in self.list_data_dict[i]),
-                               has_bev=('img' in self.list_data_dict[i])
+                               has_img=('image' in sample.keys()),
+                               has_bev=('img' in sample.keys())
                                )
 
         if isinstance(i, int):
@@ -828,6 +832,8 @@ def train():
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
+
+    set_seed(422)
 
     bnb_model_from_pretrained_args = {}
     if training_args.bits in [4, 8]:
@@ -992,8 +998,7 @@ def train():
         model.initialize_X_tokenizer(model_args, tokenizer=tokenizer)
 
         for n, p in model.named_parameters():
-            if p.requires_grad == False and \
-                    ('bev_tower' in n or 'lm_head' in n or 'embed_tokens' in n):
+            if p.requires_grad == False and 'bev_tower' in n:
                 p.requires_grad = True
                
     if training_args.bits in [4, 8]:
@@ -1009,7 +1014,12 @@ def train():
                     if training_args.bf16 and module.weight.dtype == torch.float32:
                         module = module.to(torch.bfloat16)
 
+
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+
+    # mm_projector_weights = torch.load(model_args.pretrain_mm_mlp_adapter, map_location='cpu')
+    # mm_projector_weights = {k: v.to(torch.float16) for k, v in mm_projector_weights.items()}
+    # model.load_state_dict(mm_projector_weights, strict=False)
 
     # from accelerate import Accelerator
     #
@@ -1029,32 +1039,54 @@ def train():
     # optimizer = torch.optim.AdamW(projector_parameters, lr=training_args.learning_rate)
     #
     # model, optimizer, train_dataloader = accelerator.prepare(model, optimizer, train_dataloader)
+    #
     # cnt = 0
     # from tqdm import tqdm
+    # for i, batch in enumerate(train_dataloader):
+    #     bev_tower = model.get_bev_tower()
+    #     bev_features = bev_tower.get_bev_features(img_metas=batch['img_metas'], img=batch['img'])
+    #
+    #     from llava.model.utils import save_tensor, plot_attention_map
+    #
+    #     bev_features = bev_features[0].reshape(200, 200, -1)
+    #     print(bev_features.shape)
+    #     plot_attention_map(bev_features, f"/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/images/bev_features_{i}.png")
+    #
+    #     # outputs = model(**batch)
+    #     # print(f"loss: {outputs.loss}")
+    #
+    #     cnt += 1
+    #     if cnt >= 10: break
+
     # for batch in tqdm(train_dataloader):
-    #    cnt += 1
+    #     print(batch['input_ids'][0])
+    #     print(batch['labels'][0])
+    #     print(batch['images'].shape, batch['images'].dtype)
+    #     outputs = model(**batch)
+    #     print(f"loss: {outputs.loss}")
+    #     break
     #
     # import sys
     #
     # sys.exit(0)
 
-    #
-    # model.cuda().half()
-    #
-    # cnt = 0
-    # from tqdm import tqdm
-    # for batch in tqdm(train_dataloader):
-    #     cnt += 1
-    #     print(batch.keys())
-    #     print(batch['img'].shape)
-    #     print(batch['input_ids'].shape)
-    #     print(batch['labels'].shape)
-    #     img_metas = batch['img_metas']
-    #     batch = {k:v.cuda() for k, v in batch.items() if k != "img_metas"}
-    #     batch['img_metas'] = img_metas
-    #     outputs = model(**batch)
-    #     print(outputs.loss)
-    #     break
+    # #
+    # # model.cuda().half()
+    # #
+    # # cnt = 0
+    # # from tqdm import tqdm
+    # # for batch in tqdm(train_dataloader):
+    # #     cnt += 1
+    # #     print(batch.keys())
+    # #     print(batch['img'].shape)
+    # #     print(batch['input_ids'].shape)
+    # #     print(batch['labels'].shape)
+    # #     img_metas = batch['img_metas']
+    # #     batch = {k:v.cuda() for k, v in batch.items() if k != "img_metas"}
+    # #     batch['img_metas'] = img_metas
+    # #     outputs = model(**batch)
+    # #     print(outputs.loss)
+    # #     break
 
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,

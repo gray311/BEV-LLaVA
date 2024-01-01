@@ -49,7 +49,7 @@ class BEVVisionTower(nn.Module):
         self.vision_tower_name = vision_tower
         self.load_model()
 
-    def load_model(self):
+    def load_model(self, checkpoint_path=None):
         cfg = Config.fromfile(self.vision_tower_name)
         cfg.model.pretrained = None
         cfg.model.train_cfg = None
@@ -59,7 +59,10 @@ class BEVVisionTower(nn.Module):
         # self.vision_tower.requires_grad_(False)
         self.model_config = dict(cfg)['model']
         self._dim_ = cfg._dim_ * cfg.dim_scale
-        checkpoint = torch.load(cfg.load_ckpt)
+        if checkpoint_path is None:
+            checkpoint = torch.load(cfg.load_ckpt)
+        else:
+            checkpoint = torch.load(checkpoint_path)
         self.vision_tower.load_state_dict(checkpoint['state_dict'], strict=False)
         if self.aggregation_ops == "convolution":
             self.fusion_module = ReduceBEVFeatures()
@@ -96,6 +99,18 @@ class BEVVisionTower(nn.Module):
 
         return image_features
 
+    def get_bev_features(self, img_metas, img):
+        if type(img) is list:
+            assert type(img_metas) is list
+            bev_features = []
+            for image in images:
+                image_forward_out = self.vision_tower(img_metas=img_metas, img=img.to(device=self.device, dtype=self.dtype))
+                bev_features.append(image_feature)
+        else:
+            bev_features = self.vision_tower(img_metas=img_metas, img=img.to(device=self.device, dtype=self.dtype))
+
+        return bev_features
+
     @property
     def dtype(self):
         return self.vision_tower.pts_bbox_head.positional_encoding.row_embed.weight.dtype
@@ -122,7 +137,9 @@ from typing import Dict, Optional, Sequence, List
 def collate(instances):
     batch = dict()
 
-    batch['instruction'] = [instance['instruction'] for instance in instances]
+    batch['instruction'] = [instance['instruction'].format(question=instance['question']) for instance in instances]
+    batch['answer'] = [instance['answer'] for instance in instances]
+
 
     if 'img' in instances[0] and 'img_metas' in instances[0]:
         bev_imgs = [instance['img'] for instance in instances]
@@ -156,6 +173,7 @@ if __name__ == "__main__":
     cnt = 0
     for batch in tqdm(train_dataloader):
         cnt += 1
+
 
 
     # from tqdm import tqdm

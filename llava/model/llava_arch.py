@@ -99,13 +99,12 @@ class LlavaMetaModel:
             self.mm_projector.load_state_dict(get_w(mm_projector_weights, 'mm_projector'))
 
     def initialize_bev_modules(self, model_args, fsdp=None):
-        bev_tower = model_args.bev_tower
-        mm_vision_select_layer = model_args.mm_vision_select_layer
-        mm_vision_select_feature = model_args.mm_vision_select_feature
+        bev_tower = getattr(model_args, 'bev_tower', 'mm_bev_tower')
+        mm_bev_select_layer = getattr(model_args, 'mm_bev_select_layer', 'mm_vision_select_layer')
+        mm_bev_select_feature = getattr(model_args, 'mm_bev_select_feature', 'mm_vision_select_feature')
         pretrain_mm_mlp_adapter = model_args.pretrain_mm_mlp_adapter
 
-        self.config.mm_vision_tower = bev_tower
-
+        self.config.mm_bev_tower = bev_tower
         if self.get_bev_tower() is None:
             bev_tower = build_bev_tower(model_args)
 
@@ -123,8 +122,8 @@ class LlavaMetaModel:
         self.config.use_mm_proj = True
         self.config.mm_projector_type = getattr(model_args, 'mm_projector_type', 'linear')
         self.config.mm_hidden_size = bev_tower.hidden_size
-        self.config.mm_vision_select_layer = mm_vision_select_layer
-        self.config.mm_vision_select_feature = mm_vision_select_feature
+        self.config.mm_bev_select_layer = mm_bev_select_layer
+        self.config.mm_bev_select_feature = mm_bev_select_feature
 
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
@@ -146,6 +145,9 @@ class LlavaMetaForCausalLM(ABC):
     @abstractmethod
     def get_model(self):
         pass
+
+    def get_vision_tower(self):
+        return self.get_model().get_vision_tower()
 
     def get_image_tower(self):
         return self.get_model().get_vision_tower()

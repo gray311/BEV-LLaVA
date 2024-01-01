@@ -204,6 +204,7 @@ from llava.model.multimodal_encoder.bev_mmdet3d.datasets.pipelines import (
 dataset_type = 'CustomNuScenesDataset'
 data_root = '/home/scratch.chaoweix_nvresearch/av/AV-GPT/data/nuscenes/'
 nuscenes_qa_file = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/nuscenes-qa/'
+drivelm_qa_file = '/home/scratch.chaoweix_nvresearch/visual_instruction/BEV-LLaVA/workspace/data/drivelm/'
 train_dataset_length = 50000
 eval_dataset_length = 500
 file_client_args = dict(backend='disk')
@@ -225,18 +226,8 @@ test_pipeline = [
     dict(type=LoadMultiViewImageFromFiles, to_float32=True),
     dict(type=NormalizeMultiviewImage, **img_norm_cfg),
     dict(type=PadMultiViewImage, size_divisor=32),
-    dict(
-        type=MultiScaleFlipAug3D,
-        img_scale=(1600, 900),
-        pts_scale_ratio=1,
-        flip=False,
-        transforms=[
-            dict(
-                type=DefaultFormatBundle3D,
-                class_names=class_names,
-                with_label=False),
-            dict(type=CustomCollect3D, keys=['img'])
-        ])
+    dict(type=DefaultFormatBundle3D, class_names=class_names),
+    dict(type=CustomCollect3D, keys=['img'])
 ]
 
 data = dict(
@@ -246,8 +237,9 @@ data = dict(
         type=dataset_type,
         data_root=data_root,
         ann_file=data_root + 'nuscenes_infos_temporal_train.pkl',
-        nuscenes_qa_file=nuscenes_qa_file + "NuScenes_train_questions.json",
-        dataset_length=train_dataset_length,
+        # nuscenes_qa_file=nuscenes_qa_file + "NuScenes_train_questions.json",
+        drivelm_qa_file=drivelm_qa_file + 'v1_0_train_nus_mini.json',
+        # dataset_length=train_dataset_length,
         pipeline=train_pipeline,
         classes=class_names,
         modality=input_modality,
@@ -261,17 +253,26 @@ data = dict(
     val=dict(type=dataset_type,
              data_root=data_root,
              ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
-             nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+             # nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+             drivelm_qa_file=drivelm_qa_file + 'v1_0_train_nus_mini.json',
              dataset_length=eval_dataset_length,
-             pipeline=test_pipeline,  bev_size=(bev_h_, bev_w_),
-             classes=class_names, modality=input_modality, samples_per_gpu=1),
+             pipeline=test_pipeline,
+             bev_size=(bev_h_, bev_w_),
+             queue_length=queue_length,
+             classes=class_names,
+             modality=input_modality,
+             samples_per_gpu=1),
     test=dict(type=dataset_type,
               data_root=data_root,
-              ann_file=data_root + 'nuscenes_infos_temporal_val.pkl',
-              nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+              ann_file=data_root + 'nuscenes_infos_temporal_train.pkl',
+              # nuscenes_qa_file=nuscenes_qa_file + "NuScenes_val_questions.json",
+              drivelm_qa_file=drivelm_qa_file + 'v1_0_train_nus_mini.json',
               dataset_length=eval_dataset_length,
-              pipeline=test_pipeline, bev_size=(bev_h_, bev_w_),
-              classes=class_names, modality=input_modality),
+              pipeline=test_pipeline,
+              bev_size=(bev_h_, bev_w_),
+              queue_length=queue_length,
+              classes=class_names,
+              modality=input_modality),
     shuffler_sampler=dict(type='DistributedGroupSampler'),
     nonshuffler_sampler=dict(type='DistributedSampler')
 )
